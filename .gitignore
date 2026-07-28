@@ -1,0 +1,14 @@
+/build
+/build-*
+/datasets
+/logs
+/weights
+/results
+/storage
+
+.DS_Store
+/.claude
+/.matplotlib-cache
+/.venv*
+*__pycache__
+*.pyc
