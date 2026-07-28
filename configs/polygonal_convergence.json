@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "polygonal_convergence",
+  "mesh_families": ["polygonal"],
+  "levels": [4, 5, 6],
+  "patterns": ["vertical_split"],
+  "epsilons": [0.0],
+  "theta": {"start": 0.24, "stop": 0.24, "count": 1},
+  "repeats": 1
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "problem": "heterogeneous_diffusion",
+  "domain": [[-1.0, 1.0], [-1.0, 1.0]],
+  "finite_element_degree": 1,
+  "patterns": [
+    "vertical_split",
+    "checkerboard_2x2",
+    "vertical_stripes_4",
+    "checkerboard_4x4"
+  ],
+  "epsilons": [0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8, 3.5, 5.0, 7.0, 9.5],
+  "high_region": "white",
+  "relative_tolerance": 1e-8,
+  "absolute_tolerance": 1e-50,
+  "maximum_iterations": 10000,
+  "warmup_runs": 1,
+  "matrix_format": "scipy_csr_npz",
+  "save_matrix": true
+}

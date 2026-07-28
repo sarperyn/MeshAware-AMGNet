@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "large",
+  "mesh_families": ["quadrilateral", "simplex", "polygonal"],
+  "levels": [3, 4, 5, 6, 7, 8, 9, 10],
+  "theta": {"start": 0.02, "stop": 0.90, "count": 25},
+  "repeats_by_level": {
+    "3": 200,
+    "4": 100,
+    "5": 50,
+    "6": 20,
+    "7": 10,
+    "8": 7,
+    "9": 5,
+    "10": 4
+  }
+}

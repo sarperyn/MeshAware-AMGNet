@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "small",
+  "mesh_families": ["quadrilateral", "simplex", "polygonal"],
+  "levels": [3, 4, 6],
+  "theta": {"start": 0.02, "stop": 0.90, "count": 5},
+  "repeats": 1
+}

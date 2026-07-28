@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "convergence",
+  "mesh_families": ["quadrilateral", "simplex"],
+  "levels": [2, 3, 4],
+  "patterns": ["vertical_split"],
+  "epsilons": [0.0],
+  "theta": {"start": 0.24, "stop": 0.24, "count": 1},
+  "repeats": 1
+}

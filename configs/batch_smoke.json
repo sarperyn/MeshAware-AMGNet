@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "batch_smoke",
+  "mesh_families": ["quadrilateral", "simplex", "polygonal"],
+  "levels": [2],
+  "patterns": ["vertical_split"],
+  "epsilons": [0.0],
+  "theta_values": [0.2, 0.4],
+  "repeats": 2
+}

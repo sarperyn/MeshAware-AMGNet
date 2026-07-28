@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "medium_level10_pilot",
+  "mesh_families": ["quadrilateral", "simplex", "polygonal"],
+  "levels": [10],
+  "patterns": ["checkerboard_4x4"],
+  "epsilons": [9.5],
+  "theta_values": [0.02, 0.90],
+  "repeats": 1,
+  "warmup_runs": 0
+}

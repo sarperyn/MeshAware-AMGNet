@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "medium",
+  "mesh_families": ["quadrilateral", "simplex", "polygonal"],
+  "levels": [3, 5, 8, 10],
+  "theta": {"start": 0.02, "stop": 0.90, "count": 10},
+  "repeats": 1
+}
