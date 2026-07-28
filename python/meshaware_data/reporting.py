@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import csv
+import json
+import statistics
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Iterable
+
+
+REPORT_FIELDS = (
+    "scale",
+    "sample_id",
+    "matrix_id",
+    "mesh_family",
+    "pattern",
+    "epsilon",
+    "refinement",
+    "h",
+    "h_max",
+    "theta",
+    "repeat",
+    "cells",
+    "background_cells",
+    "dofs",
+    "nnz",
+    "rho",
+    "iterations",
+    "n_levels",
+    "residual_initial",
+    "residual_final",
+    "assembly_sec",
+    "amg_setup_sec",
+    "solve_sec",
+    "elapsed_sec",
+    "setup_plus_solve_sec",
+    "l2_error",
+    "h1_seminorm_error",
+    "energy_error",
+    "matrix_path",
+)
+
+
+def load_json_records(paths: Iterable[Path]) -> list[dict[str, Any]]:
+    records = []
+    for path in sorted(paths):
+        with path.open(encoding="utf-8") as handle:
+            record = json.load(handle)
+        if record.get("schema_version") != 1:
+            raise ValueError(f"Unsupported record schema in {path}")
+        records.append(record)
+    return records
+
+
+def report_row(record: dict[str, Any], scale: str) -> dict[str, Any]:
+    setup = float(record["amg_setup_time_seconds"])
+    solve = float(record["solve_time_seconds"])
+    return {
+        "scale": scale,
+        "sample_id": record["sample_id"],
+        "matrix_id": record["matrix_id"],
+        "mesh_family": record["mesh_family"],
+        "pattern": record["pattern"],
+        "epsilon": record["epsilon"],
+        "refinement": record["level"],
+        "h": record["h_nominal"],
+        "h_max": record["h_max"],
+        "theta": record["theta"],
+        "repeat": record["repeat"],
+        "cells": record["cells"],
+        "background_cells": record.get("background_cells", record["cells"]),
+        "dofs": record["dofs"],
+        "nnz": record["nnz"],
+        "rho": record["convergence_factor"],
+        "iterations": record["cg_iterations"],
+        "n_levels": record["amg_levels"],
+        "residual_initial": record["residual_initial"],
+        "residual_final": record["residual_final"],
+        "assembly_sec": record["assembly_time_seconds"],
+        "amg_setup_sec": setup,
+        "solve_sec": solve,
+        # Existing plots define elapsed_sec as solve-only time. The combined
+        # value remains available under its unambiguous name.
+        "elapsed_sec": solve,
+        "setup_plus_solve_sec": setup + solve,
+        "l2_error": record["l2_error"],
+        "h1_seminorm_error": record["h1_seminorm_error"],
+        "energy_error": record["energy_error"],
+        "matrix_path": record["matrix_path"],
+    }
+
+
+def write_trial_report(
+    records: list[dict[str, Any]], destination: Path, scale: str
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REPORT_FIELDS)
+        writer.writeheader()
+        writer.writerows(report_row(record, scale) for record in records)
+
+
+def write_optimal_theta_summary(
+    records: list[dict[str, Any]], destination: Path
+) -> None:
+    by_matrix_theta: dict[tuple[str, float], list[dict[str, Any]]] = defaultdict(
+        list
+    )
+    for record in records:
+        by_matrix_theta[(str(record["matrix_id"]), float(record["theta"]))].append(
+            record
+        )
+
+    aggregated: dict[str, list[dict[str, float]]] = defaultdict(list)
+    for (matrix_id, theta), group in by_matrix_theta.items():
+        aggregated[matrix_id].append(
+            {
+                "theta": theta,
+                "mean_rho": statistics.mean(
+                    float(record["convergence_factor"]) for record in group
+                ),
+                "mean_setup_sec": statistics.mean(
+                    float(record["amg_setup_time_seconds"]) for record in group
+                ),
+                "mean_solve_sec": statistics.mean(
+                    float(record["solve_time_seconds"]) for record in group
+                ),
+                "repeats": float(len(group)),
+            }
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fields = (
+        "matrix_id",
+        "theta_min_rho",
+        "mean_rho",
+        "theta_min_total_time",
+        "mean_setup_plus_solve_sec",
+        "theta_count",
+        "minimum_repeats",
+    )
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for matrix_id, candidates in sorted(aggregated.items()):
+            # Explicit deterministic tie-break rules are part of the schema.
+            best_rho = min(
+                candidates,
+                key=lambda row: (
+                    row["mean_rho"],
+                    row["mean_solve_sec"],
+                    row["theta"],
+                ),
+            )
+            best_time = min(
+                candidates,
+                key=lambda row: (
+                    row["mean_setup_sec"] + row["mean_solve_sec"],
+                    row["mean_rho"],
+                    row["theta"],
+                ),
+            )
+            writer.writerow(
+                {
+                    "matrix_id": matrix_id,
+                    "theta_min_rho": best_rho["theta"],
+                    "mean_rho": best_rho["mean_rho"],
+                    "theta_min_total_time": best_time["theta"],
+                    "mean_setup_plus_solve_sec": best_time["mean_setup_sec"]
+                    + best_time["mean_solve_sec"],
+                    "theta_count": len(candidates),
+                    "minimum_repeats": int(
+                        min(candidate["repeats"] for candidate in candidates)
+                    ),
+                }
+            )
+
+
+def build_family_reports(family_root: Path, scale: str) -> int:
+    records = load_json_records((family_root / "records").glob("*.json"))
+    if not records:
+        return 0
+    write_trial_report(
+        records, family_root / "diffusion_reports" / "trials.csv", scale
+    )
+    write_optimal_theta_summary(
+        records, family_root / "summaries" / "optimal_theta.csv"
+    )
+    return len(records)
