@@ -19,6 +19,8 @@ REPORT_FIELDS = (
     "h",
     "h_max",
     "theta",
+    "amg_smoother",
+    "amg_relaxation_weight",
     "repeat",
     "cells",
     "background_cells",
@@ -66,6 +68,10 @@ def report_row(record: dict[str, Any], scale: str) -> dict[str, Any]:
         "h": record["h_nominal"],
         "h_max": record["h_max"],
         "theta": record["theta"],
+        "amg_smoother": record.get(
+            "amg_smoother", "symmetric-gauss-seidel"
+        ),
+        "amg_relaxation_weight": record.get("amg_relaxation_weight", 1.0),
         "repeat": record["repeat"],
         "cells": record["cells"],
         "background_cells": record.get("background_cells", record["cells"]),

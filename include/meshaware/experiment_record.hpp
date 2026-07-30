@@ -18,6 +18,8 @@ struct ExperimentRecord {
   double epsilon = 0.0;
   std::string high_region;
   double theta = 0.0;
+  std::string amg_smoother = "symmetric-gauss-seidel";
+  double amg_relaxation_weight = 1.0;
   unsigned int repeat = 0;
   std::uint64_t cells = 0;
   std::uint64_t background_cells = 0;

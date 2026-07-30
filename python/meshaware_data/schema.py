@@ -14,6 +14,7 @@ PATTERNS = (
     "checkerboard_4x4",
 )
 MESH_FAMILIES = ("quadrilateral", "simplex", "polygonal")
+AMG_SMOOTHERS = ("chebyshev", "damped-jacobi", "symmetric-gauss-seidel")
 
 
 def _linspace(start: float, stop: float, count: int) -> tuple[float, ...]:
@@ -39,6 +40,8 @@ class ExperimentConfig:
     relative_tolerance: float
     absolute_tolerance: float
     maximum_iterations: int
+    amg_smoother: str
+    jacobi_damping: float
     warmup_runs: int
     repeats: int
     repeats_by_level: dict[int, int]
@@ -70,6 +73,10 @@ class ExperimentConfig:
             raise ValueError("solver tolerances must be valid")
         if self.maximum_iterations < 1 or self.repeats < 1:
             raise ValueError("iteration and repeat counts must be positive")
+        if self.amg_smoother not in AMG_SMOOTHERS:
+            raise ValueError(f"amg_smoother must be chosen from {AMG_SMOOTHERS}")
+        if not 0.0 < self.jacobi_damping <= 1.0:
+            raise ValueError("jacobi_damping must lie in (0,1]")
         if self.warmup_runs < 0:
             raise ValueError("warmup_runs must be non-negative")
         if any(level not in self.levels for level in self.repeats_by_level):
@@ -152,6 +159,8 @@ class TrialRecord:
     solve_time_seconds: float
     matrix_format: str
     matrix_path: str
+    amg_smoother: str = "symmetric-gauss-seidel"
+    amg_relaxation_weight: float = 1.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -192,6 +201,10 @@ def load_experiment_config(
         relative_tolerance=float(merged["relative_tolerance"]),
         absolute_tolerance=float(merged["absolute_tolerance"]),
         maximum_iterations=int(merged["maximum_iterations"]),
+        amg_smoother=str(
+            merged.get("amg_smoother", "symmetric-gauss-seidel")
+        ),
+        jacobi_damping=float(merged.get("jacobi_damping", 2.0 / 3.0)),
         warmup_runs=int(merged.get("warmup_runs", 1)),
         repeats=int(merged.get("repeats", 1)),
         repeats_by_level=repeats_by_level,
