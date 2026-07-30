@@ -56,6 +56,8 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(row["elapsed_sec"], 2.0)
         self.assertEqual(row["setup_plus_solve_sec"], 5.0)
         self.assertEqual(row["n_levels"], 4)
+        self.assertEqual(row["amg_smoother"], "symmetric-gauss-seidel")
+        self.assertEqual(row["amg_relaxation_weight"], 1.0)
 
     def test_optimal_theta_has_two_objectives(self) -> None:
         records = [

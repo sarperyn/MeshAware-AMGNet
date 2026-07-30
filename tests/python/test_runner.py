@@ -54,6 +54,14 @@ class BatchRunnerTests(unittest.TestCase):
             command[command.index("--warmup-runs") + 1],
             str(self.config.warmup_runs),
         )
+        self.assertEqual(
+            command[command.index("--amg-smoother") + 1],
+            "symmetric-gauss-seidel",
+        )
+        self.assertAlmostEqual(
+            float(command[command.index("--jacobi-damping") + 1]),
+            2.0 / 3.0,
+        )
         self.assertIn("--skip-matrix-write", command)
         self.assertIn("--skip-existing-records", command)
 
