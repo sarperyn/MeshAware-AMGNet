@@ -61,6 +61,8 @@ class ExperimentConfigTests(unittest.TestCase):
         config = self.load("smoke")
         self.assertEqual(config.trial_count, 1)
         self.assertEqual(config.warmup_runs, 1)
+        self.assertEqual(config.amg_smoother, "symmetric-gauss-seidel")
+        self.assertAlmostEqual(config.jacobi_damping, 2.0 / 3.0)
         self.assertEqual(len(tuple(config.iter_trials())), 1)
 
     def test_polygonal_validation_configs(self) -> None:
@@ -80,6 +82,14 @@ class ExperimentConfigTests(unittest.TestCase):
         config = replace(self.load("batch_smoke"), theta_values=(0.2, 0.2))
         with self.assertRaisesRegex(ValueError, "must be unique"):
             config.validate()
+
+    def test_invalid_smoother_options_are_rejected(self) -> None:
+        config = self.load("smoke")
+        replace(config, amg_smoother="chebyshev").validate()
+        with self.assertRaisesRegex(ValueError, "amg_smoother"):
+            replace(config, amg_smoother="gauss-seidel").validate()
+        with self.assertRaisesRegex(ValueError, "jacobi_damping"):
+            replace(config, jacobi_damping=0.0).validate()
 
 
 if __name__ == "__main__":
