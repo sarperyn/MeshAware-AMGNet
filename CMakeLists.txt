@@ -105,9 +105,32 @@ if(MESHAWARE_BUILD_DEALII)
               --pattern vertical_split
               --oracle
           )
+          add_test(
+            NAME polydeal_assemble_only
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 0
+              --pattern vertical_split
+              --matrix
+                ${CMAKE_CURRENT_BINARY_DIR}/test_outputs/polydeal_assemble_only.petsc
+              --assemble-only
+          )
+          add_test(
+            NAME polydeal_chebyshev_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 2
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-smoother chebyshev
+          )
           set_tests_properties(
             polydeal_production_smoke
             polydeal_native_oracle
+            polydeal_assemble_only
+            polydeal_chebyshev_smoke
             PROPERTIES ENVIRONMENT "OMPI_MCA_btl=self"
           )
           foreach(_pattern
@@ -157,9 +180,33 @@ if(MESHAWARE_BUILD_DEALII)
           --pattern vertical_split
           --theta 0.24
       )
+      add_test(
+        NAME dealii_damped_jacobi_smoke
+        COMMAND meshaware_diffusion_dealii
+          --mesh-family quadrilateral
+          --level 1
+          --epsilon 0
+          --pattern vertical_split
+          --theta 0.24
+          --amg-smoother damped-jacobi
+          --jacobi-damping 0.6666666666666666
+      )
+      add_test(
+        NAME dealii_assemble_only
+        COMMAND meshaware_diffusion_dealii
+          --mesh-family simplex
+          --level 1
+          --epsilon 0
+          --pattern vertical_split
+          --matrix
+            ${CMAKE_CURRENT_BINARY_DIR}/test_outputs/dealii_assemble_only.petsc
+          --assemble-only
+      )
       set_tests_properties(
         dealii_quadrilateral_smoke
         dealii_simplex_smoke
+        dealii_damped_jacobi_smoke
+        dealii_assemble_only
         PROPERTIES ENVIRONMENT "OMPI_MCA_btl=self"
       )
     endif()
