@@ -5,6 +5,10 @@
 /weights
 /results
 /storage
+/docs
+/reports
+/experiments
+/presentation
 
 .DS_Store
 /.claude
