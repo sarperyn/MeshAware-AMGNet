@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "description": "Locked Phase 4 held-out evaluation for cnn_paper_v1.",
+  "training_config": "configs/ml_cnn_baseline.json",
+  "checkpoint": "weights/cnn_paper_v1/best.pt",
+  "phase3_summary": "weights/cnn_paper_v1/summary.json",
+  "bootstrap": {
+    "replicates": 2000,
+    "seed": 2026,
+    "confidence_level": 0.95
+  },
+  "output": {
+    "directory": "results/cnn_paper_v1/test_v1",
+    "report": "reports/ml_phase_4_test_report.md",
+    "plots": true
+  }
+}

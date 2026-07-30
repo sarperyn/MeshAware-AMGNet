@@ -14,6 +14,8 @@
   "relative_tolerance": 1e-8,
   "absolute_tolerance": 1e-50,
   "maximum_iterations": 10000,
+  "amg_smoother": "symmetric-gauss-seidel",
+  "jacobi_damping": 0.6666666666666666,
   "warmup_runs": 1,
   "matrix_format": "scipy_csr_npz",
   "save_matrix": true
