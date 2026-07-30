@@ -81,6 +81,10 @@ def command_for(
         str(config.absolute_tolerance),
         "--max-iterations",
         str(config.maximum_iterations),
+        "--amg-smoother",
+        config.amg_smoother,
+        "--jacobi-damping",
+        str(config.jacobi_damping),
         "--repeat",
         str(trial["repeat"]),
         "--record",
@@ -134,6 +138,10 @@ def command_for_batch(
         str(config.absolute_tolerance),
         "--max-iterations",
         str(config.maximum_iterations),
+        "--amg-smoother",
+        config.amg_smoother,
+        "--jacobi-damping",
+        str(config.jacobi_damping),
         "--repeats",
         str(repeats),
         "--warmup-runs",
@@ -509,12 +517,11 @@ def main() -> None:
             import numpy  # noqa: F401
         except ModuleNotFoundError as error:
             raise SystemExit(
-                "Compressed NPZ matrix storage requires NumPy. Create the "
-                "data environment with:\n"
-                "  python3 -m venv .venv-data\n"
-                "  .venv-data/bin/python -m pip install "
-                "-r requirements-data.txt\n"
-                "Then run this command with .venv-data/bin/python."
+                "Compressed NPZ matrix storage requires NumPy. Run this "
+                "command with an existing Python environment that provides "
+                "NumPy (for this repository, \"$ENV/pytorch/bin/python\"), "
+                "or install requirements-data.txt into your chosen existing "
+                "environment."
             ) from error
 
     experiment_root.mkdir(parents=True, exist_ok=True)

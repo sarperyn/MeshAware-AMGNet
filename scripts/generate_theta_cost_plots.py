@@ -426,7 +426,7 @@ def _write_svg(
                 color = colors[legend_index % len(colors)]
                 svg.append(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x + 14:.1f}" y2="{y:.1f}" stroke="{color}" stroke-width="1.1"/>')
                 svg.append(f'<circle cx="{x + 7:.1f}" cy="{y:.1f}" r="1.6" fill="{color}"/>')
-                svg.append(_svg_text(x + 17, y + 3, f"e={epsilon:.1f}", size=6, anchor="start"))
+                svg.append(_svg_text(x + 17, y + 3, f"ε={epsilon:.1f}", size=6, anchor="start"))
     svg.append("</svg>")
     destination.write_text("\n".join(svg) + "\n", encoding="utf-8")
 
@@ -523,7 +523,7 @@ def _write_png(
                 capthick=0.55,
             )
             handles.append(line.lines[0])
-            labels.append(f"e={epsilon:.1f}")
+            labels.append(rf"$\epsilon={epsilon:.1f}$")
 
         if index == len(h_values) - 1:
             legend = ax.legend(

@@ -58,6 +58,10 @@ void write_json(std::ostream &output, const ExperimentRecord &record) {
          << "  \"high_region\": \"" << json_escape(record.high_region)
          << "\",\n"
          << "  \"theta\": " << record.theta << ",\n"
+         << "  \"amg_smoother\": \"" << json_escape(record.amg_smoother)
+         << "\",\n"
+         << "  \"amg_relaxation_weight\": "
+         << record.amg_relaxation_weight << ",\n"
          << "  \"repeat\": " << record.repeat << ",\n"
          << "  \"cells\": " << record.cells << ",\n"
          << "  \"background_cells\": " << record.background_cells << ",\n"

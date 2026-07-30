@@ -86,6 +86,9 @@ struct Options {
   double relative_tolerance = 1e-8;
   double absolute_tolerance = 1e-50;
   unsigned int maximum_iterations = 10000;
+  meshaware::AmgSmoother amg_smoother =
+      meshaware::AmgSmoother::symmetric_gauss_seidel;
+  double jacobi_damping = 2.0 / 3.0;
   unsigned int repeat = 0;
   std::vector<double> theta_values;
   unsigned int repeats = 1;
@@ -95,6 +98,7 @@ struct Options {
   std::filesystem::path matrix_path;
   bool skip_matrix_write = false;
   bool skip_existing_records = false;
+  bool assemble_only = false;
 };
 
 std::string require_value(int &index, const int argc, char **argv) {
@@ -142,6 +146,11 @@ Options parse_options(const int argc, char **argv) {
       options.absolute_tolerance = std::stod(require_value(i, argc, argv));
     else if (argument == "--max-iterations")
       options.maximum_iterations = std::stoul(require_value(i, argc, argv));
+    else if (argument == "--amg-smoother")
+      options.amg_smoother =
+          meshaware::parse_amg_smoother(require_value(i, argc, argv));
+    else if (argument == "--jacobi-damping")
+      options.jacobi_damping = std::stod(require_value(i, argc, argv));
     else if (argument == "--repeat")
       options.repeat = std::stoul(require_value(i, argc, argv));
     else if (argument == "--repeats")
@@ -158,6 +167,8 @@ Options parse_options(const int argc, char **argv) {
       options.skip_matrix_write = true;
     else if (argument == "--skip-existing-records")
       options.skip_existing_records = true;
+    else if (argument == "--assemble-only")
+      options.assemble_only = true;
     else if (argument == "--help") {
       std::cout
           << "Usage: meshaware_diffusion_dealii [options]\n"
@@ -171,6 +182,9 @@ Options parse_options(const int argc, char **argv) {
           << "  --theta T              BoomerAMG strong threshold\n"
           << "  --theta-values CSV     batched strong-threshold grid\n"
           << "  --rtol T --atol T --max-iterations N\n"
+          << "  --amg-smoother NAME    chebyshev, damped-jacobi, or "
+             "symmetric-gauss-seidel\n"
+          << "  --jacobi-damping W     damping in (0,1], default 2/3\n"
           << "  --repeat N              timing repeat identifier\n"
           << "  --repeats N             repeats per theta in batch mode\n"
           << "  --warmup-runs N          discarded warm-ups per theta\n"
@@ -178,7 +192,8 @@ Options parse_options(const int argc, char **argv) {
           << "  --record-dir PATH       generated records for batch mode\n"
           << "  --matrix PATH           PETSc binary matrix/reference\n"
           << "  --skip-matrix-write     record path without rewriting matrix\n"
-          << "  --skip-existing-records resume a partial batch\n";
+          << "  --skip-existing-records resume a partial batch\n"
+          << "  --assemble-only         export matrix without solving\n";
       std::exit(0);
     } else
       throw std::invalid_argument("Unknown argument: " + argument);
@@ -197,12 +212,22 @@ Options parse_options(const int argc, char **argv) {
   if (options.relative_tolerance <= 0.0 || options.absolute_tolerance < 0.0 ||
       options.maximum_iterations == 0)
     throw std::invalid_argument("invalid solver tolerances or iteration limit");
+  if (!(options.jacobi_damping > 0.0 && options.jacobi_damping <= 1.0))
+    throw std::invalid_argument("jacobi-damping must lie in (0,1]");
   if (options.repeats == 0)
     throw std::invalid_argument("repeats must be positive");
   if (!options.record_directory.empty() && !options.record_path.empty())
     throw std::invalid_argument("record and record-dir are mutually exclusive");
   if (options.record_directory.empty() && options.theta_values.size() != 1)
     throw std::invalid_argument("theta-values requires record-dir batch mode");
+  if (options.assemble_only &&
+      (options.matrix_path.empty() || options.skip_matrix_write))
+    throw std::invalid_argument(
+        "assemble-only requires a writable --matrix path");
+  if (options.assemble_only &&
+      (!options.record_path.empty() || !options.record_directory.empty()))
+    throw std::invalid_argument(
+        "assemble-only does not accept record output options");
   return options;
 }
 
@@ -244,6 +269,12 @@ public:
     const std::uint64_t nonzeros = matrix_nonzeros();
     if (!options.matrix_path.empty() && !options.skip_matrix_write)
       write_matrix(options.matrix_path);
+
+    if (options.assemble_only) {
+      std::cout << "assembled_only=1 dofs=" << dof_handler.n_dofs()
+                << " nnz=" << nonzeros << '\n';
+      return;
+    }
 
     if (options.record_directory.empty())
       run_trial(options.theta_values.front(), options.repeat,
@@ -294,6 +325,7 @@ private:
               << "cells=" << triangulation.n_active_cells()
               << " dofs=" << dof_handler.n_dofs() << " h_max=" << h_max
               << " nnz=" << nonzeros << " theta=" << theta
+              << " smoother=" << meshaware::to_string(options.amg_smoother)
               << " repeat=" << repeat
               << " iterations=" << solver_metrics.iterations
               << " amg_levels=" << solver_metrics.amg_levels
@@ -430,7 +462,8 @@ private:
   meshaware::SolverMetrics solve(const double theta) {
     const meshaware::AmgSolverOptions solver_options{
         options.relative_tolerance, options.absolute_tolerance,
-        options.maximum_iterations, theta};
+        options.maximum_iterations, theta, options.amg_smoother,
+        options.jacobi_damping};
     meshaware::SolverMetrics metrics = meshaware::solve_with_boomer_amg(
         static_cast<Mat>(system_matrix),
         static_cast<const Vec &>(right_hand_side),
@@ -516,6 +549,11 @@ private:
     record.epsilon = options.epsilon;
     record.high_region = meshaware::to_string(options.high_region);
     record.theta = theta;
+    record.amg_smoother = meshaware::to_string(options.amg_smoother);
+    record.amg_relaxation_weight =
+        options.amg_smoother == meshaware::AmgSmoother::damped_jacobi
+            ? options.jacobi_damping
+            : 1.0;
     record.repeat = repeat;
     record.cells = triangulation.n_active_cells();
     record.background_cells = triangulation.n_active_cells();

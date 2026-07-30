@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -13,9 +15,43 @@ double seconds_since(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
+std::string petsc_real_option(const double value) {
+  std::ostringstream stream;
+  stream << std::setprecision(17) << value;
+  return stream.str();
+}
+
 constexpr const char *strong_threshold_option =
     "-meshaware_pc_hypre_boomeramg_strong_threshold";
+constexpr const char *smoother_option =
+    "-meshaware_pc_hypre_boomeramg_relax_type_all";
+constexpr const char *relaxation_weight_option =
+    "-meshaware_pc_hypre_boomeramg_relax_weight_all";
 } // namespace
+
+AmgSmoother parse_amg_smoother(const std::string_view name) {
+  if (name == "chebyshev")
+    return AmgSmoother::chebyshev;
+  if (name == "damped-jacobi")
+    return AmgSmoother::damped_jacobi;
+  if (name == "symmetric-gauss-seidel")
+    return AmgSmoother::symmetric_gauss_seidel;
+  throw std::invalid_argument(
+      "AMG smoother must be 'chebyshev', 'damped-jacobi', or "
+      "'symmetric-gauss-seidel'");
+}
+
+const char *to_string(const AmgSmoother smoother) {
+  switch (smoother) {
+  case AmgSmoother::chebyshev:
+    return "chebyshev";
+  case AmgSmoother::damped_jacobi:
+    return "damped-jacobi";
+  case AmgSmoother::symmetric_gauss_seidel:
+    return "symmetric-gauss-seidel";
+  }
+  throw std::invalid_argument("unknown AMG smoother");
+}
 
 void petsc_check(const PetscErrorCode error, const char *operation) {
   if (error != PETSC_SUCCESS)
@@ -31,10 +67,14 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
   if (options.relative_tolerance <= 0.0 || options.absolute_tolerance < 0.0 ||
       options.maximum_iterations == 0)
     throw std::invalid_argument("invalid solver tolerances or iteration limit");
+  if (!(options.jacobi_damping > 0.0 && options.jacobi_damping <= 1.0))
+    throw std::invalid_argument("Jacobi damping must lie in (0,1]");
 
   KSP ksp = nullptr;
   PC preconditioner = nullptr;
   bool threshold_option_is_set = false;
+  bool smoother_option_is_set = false;
+  bool relaxation_weight_option_is_set = false;
 
   petsc_check(KSPCreate(PETSC_COMM_SELF, &ksp), "KSPCreate");
   try {
@@ -56,11 +96,32 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
     petsc_check(PCSetType(preconditioner, PCHYPRE), "PCSetType");
     petsc_check(PCHYPRESetType(preconditioner, "boomeramg"), "PCHYPRESetType");
 
-    const std::string threshold = std::to_string(options.strong_threshold);
+    const std::string threshold =
+        petsc_real_option(options.strong_threshold);
     petsc_check(PetscOptionsSetValue(nullptr, strong_threshold_option,
                                      threshold.c_str()),
                 "PetscOptionsSetValue(strong_threshold)");
     threshold_option_is_set = true;
+
+    const char *hypre_smoother = "symmetric-SOR/Jacobi";
+    if (options.smoother == AmgSmoother::chebyshev)
+      hypre_smoother = "Chebyshev";
+    else if (options.smoother == AmgSmoother::damped_jacobi)
+      hypre_smoother = "Jacobi";
+    petsc_check(PetscOptionsSetValue(nullptr, smoother_option, hypre_smoother),
+                "PetscOptionsSetValue(smoother)");
+    smoother_option_is_set = true;
+
+    const double relaxation_weight =
+        options.smoother == AmgSmoother::damped_jacobi
+            ? options.jacobi_damping
+            : 1.0;
+    const std::string weight = petsc_real_option(relaxation_weight);
+    petsc_check(PetscOptionsSetValue(nullptr, relaxation_weight_option,
+                                     weight.c_str()),
+                "PetscOptionsSetValue(relaxation_weight)");
+    relaxation_weight_option_is_set = true;
+
     petsc_check(KSPSetFromOptions(ksp), "KSPSetFromOptions");
 
     // Guarantee the same zero initial guess for every timing repetition.
@@ -121,6 +182,12 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
     petsc_check(PetscOptionsClearValue(nullptr, strong_threshold_option),
                 "PetscOptionsClearValue(strong_threshold)");
     threshold_option_is_set = false;
+    petsc_check(PetscOptionsClearValue(nullptr, smoother_option),
+                "PetscOptionsClearValue(smoother)");
+    smoother_option_is_set = false;
+    petsc_check(PetscOptionsClearValue(nullptr, relaxation_weight_option),
+                "PetscOptionsClearValue(relaxation_weight)");
+    relaxation_weight_option_is_set = false;
     petsc_check(KSPDestroy(&ksp), "KSPDestroy");
 
     return {static_cast<unsigned int>(iterations),
@@ -134,6 +201,10 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
   } catch (...) {
     if (threshold_option_is_set)
       PetscOptionsClearValue(nullptr, strong_threshold_option);
+    if (smoother_option_is_set)
+      PetscOptionsClearValue(nullptr, smoother_option);
+    if (relaxation_weight_option_is_set)
+      PetscOptionsClearValue(nullptr, relaxation_weight_option);
     if (ksp != nullptr)
       KSPDestroy(&ksp);
     throw;
