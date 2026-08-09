@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
@@ -19,6 +18,7 @@ from meshaware_ml.evaluation import (
     theta_decisions,
 )
 from meshaware_ml.training import train
+
 from tests.python.test_ml_training import (
     tiny_run_config,
     write_synthetic_index,
@@ -151,7 +151,7 @@ class LockedEvaluationTests(unittest.TestCase):
                 splits_path,
                 max_epochs=1,
             )
-            phase3 = train(run)
+            train(run)
             evaluation_config_path = root / "evaluation.json"
             evaluation_config_path.write_text(
                 json.dumps({"schema_version": 1}), encoding="utf-8"

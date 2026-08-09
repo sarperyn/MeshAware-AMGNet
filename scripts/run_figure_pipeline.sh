@@ -11,8 +11,7 @@ Options:
                        Default: datasets/small
   --output-root DIR    Root directory for generated figures.
                        Default: results/figures/small
-  PYTHON=PATH          Python interpreter with requirements-figures installed.
-                       Default: python3
+  AMG_PYTHON=PATH      Required Python interpreter with plotting dependencies.
   --no-pdf             Skip pdflatex compilation.
   --help               Show this message.
 
@@ -22,10 +21,14 @@ when possible.
 USAGE
 }
 
-dataset_root="datasets/medium"
-output_root="results/figures/medium"
+dataset_root="datasets/small"
+output_root="results/figures/small"
 compile_pdf=1
-python_bin="${PYTHON:-python3}"
+if [[ -z "${AMG_PYTHON:-}" || ! -x "$AMG_PYTHON" ]]; then
+  echo "AMG_PYTHON must name an executable Python interpreter." >&2
+  exit 2
+fi
+python_bin="$AMG_PYTHON"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

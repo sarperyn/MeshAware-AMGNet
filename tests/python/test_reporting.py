@@ -6,16 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
-sys.path.insert(0, str(REPO_ROOT))
 
 from meshaware_data.reporting import (
+    SampleRecordRepository,
     report_row,
     write_optimal_theta_summary,
 )
-from utils.data import SampleRecordRepository
 
 
 def record(theta: float, rho: float, setup: float, solve: float, repeat: int):

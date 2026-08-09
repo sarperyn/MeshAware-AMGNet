@@ -1,4 +1,5 @@
 #include "meshaware/coefficient_patterns.hpp"
+#include "meshaware/driver_cli.hpp"
 #include "meshaware/experiment_record.hpp"
 #include "meshaware/petsc_amg.hpp"
 
@@ -53,13 +54,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -71,15 +70,6 @@ using Clock = std::chrono::steady_clock;
 
 double seconds_since(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
-}
-
-std::string slug_float(const double value) {
-  std::ostringstream stream;
-  stream << std::setprecision(10) << value;
-  std::string result = stream.str();
-  std::replace(result.begin(), result.end(), '.', 'p');
-  std::replace(result.begin(), result.end(), '-', 'm');
-  return result;
 }
 
 struct Options {
@@ -110,76 +100,74 @@ struct Options {
   bool assemble_only = false;
 };
 
-std::string require_value(int &index, const int argc, char **argv) {
-  if (++index >= argc)
-    throw std::invalid_argument(std::string("Missing value after ") +
-                                argv[index - 1]);
-  return argv[index];
-}
-
-std::vector<double> parse_float_list(const std::string &raw) {
-  std::vector<double> values;
-  std::istringstream stream(raw);
-  std::string token;
-  while (std::getline(stream, token, ',')) {
-    if (!token.empty())
-      values.push_back(std::stod(token));
-  }
-  if (values.empty())
-    throw std::invalid_argument("theta-values must not be empty");
-  return values;
-}
-
 Options parse_options(const int argc, char **argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
     if (argument == "--mesh-family") {
-      const std::string family = require_value(i, argc, argv);
+      const std::string family =
+          meshaware::require_option_value(i, argc, argv);
       if (family != "polygonal")
         throw std::invalid_argument("PolyDeal mesh family must be 'polygonal'");
     } else if (argument == "--level")
-      options.level = std::stoul(require_value(i, argc, argv));
+      options.level =
+          std::stoul(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--pattern")
-      options.pattern = meshaware::parse_pattern(require_value(i, argc, argv));
+      options.pattern = meshaware::parse_pattern(
+          meshaware::require_option_value(i, argc, argv));
     else if (argument == "--epsilon")
-      options.epsilon = std::stod(require_value(i, argc, argv));
+      options.epsilon =
+          std::stod(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--high-region")
       options.high_region =
-          meshaware::parse_high_region(require_value(i, argc, argv));
+          meshaware::parse_high_region(
+              meshaware::require_option_value(i, argc, argv));
     else if (argument == "--theta")
-      options.theta = std::stod(require_value(i, argc, argv));
+      options.theta =
+          std::stod(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--theta-values")
-      options.theta_values = parse_float_list(require_value(i, argc, argv));
+      options.theta_values = meshaware::parse_float_list(
+          meshaware::require_option_value(i, argc, argv), "theta-values");
     else if (argument == "--rtol")
-      options.relative_tolerance = std::stod(require_value(i, argc, argv));
+      options.relative_tolerance =
+          std::stod(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--atol")
-      options.absolute_tolerance = std::stod(require_value(i, argc, argv));
+      options.absolute_tolerance =
+          std::stod(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--max-iterations")
-      options.maximum_iterations = std::stoul(require_value(i, argc, argv));
+      options.maximum_iterations =
+          std::stoul(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--amg-backend")
       options.amg_backend =
-          meshaware::parse_amg_backend(require_value(i, argc, argv));
+          meshaware::parse_amg_backend(
+              meshaware::require_option_value(i, argc, argv));
     else if (argument == "--boomeramg-profile")
       options.boomeramg_profile =
-          meshaware::parse_boomeramg_profile(require_value(i, argc, argv));
+          meshaware::parse_boomeramg_profile(
+              meshaware::require_option_value(i, argc, argv));
     else if (argument == "--amg-smoother")
       options.amg_smoother =
-          meshaware::parse_amg_smoother(require_value(i, argc, argv));
+          meshaware::parse_amg_smoother(
+              meshaware::require_option_value(i, argc, argv));
     else if (argument == "--jacobi-damping")
-      options.jacobi_damping = std::stod(require_value(i, argc, argv));
+      options.jacobi_damping =
+          std::stod(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--repeat")
-      options.repeat = std::stoul(require_value(i, argc, argv));
+      options.repeat =
+          std::stoul(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--repeats")
-      options.repeats = std::stoul(require_value(i, argc, argv));
+      options.repeats =
+          std::stoul(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--warmup-runs")
-      options.warmup_runs = std::stoul(require_value(i, argc, argv));
+      options.warmup_runs =
+          std::stoul(meshaware::require_option_value(i, argc, argv));
     else if (argument == "--record")
-      options.record_path = require_value(i, argc, argv);
+      options.record_path = meshaware::require_option_value(i, argc, argv);
     else if (argument == "--record-dir")
-      options.record_directory = require_value(i, argc, argv);
+      options.record_directory =
+          meshaware::require_option_value(i, argc, argv);
     else if (argument == "--matrix")
-      options.matrix_path = require_value(i, argc, argv);
+      options.matrix_path = meshaware::require_option_value(i, argc, argv);
     else if (argument == "--skip-matrix-write")
       options.skip_matrix_write = true;
     else if (argument == "--skip-existing-records")
@@ -449,7 +437,8 @@ public:
 
     const std::uint64_t nonzeros = matrix_nonzeros();
     if (!options.matrix_path.empty() && !options.skip_matrix_write)
-      write_matrix(options.matrix_path);
+      meshaware::write_petsc_matrix(static_cast<Mat>(petsc_matrix),
+                                    options.matrix_path);
 
     if (options.assemble_only) {
       std::cout << "assembled_only=1 dofs="
@@ -491,7 +480,7 @@ public:
               << " backend=" << meshaware::to_string(options.amg_backend)
               << " boomeramg_profile="
               << meshaware::to_string(options.boomeramg_profile)
-              << " smoother=" << active_smoother_name()
+              << " smoother=" << meshaware::to_string(options.amg_smoother)
               << " cg_iterations=" << solver_metrics.iterations
               << " amg_levels=" << solver_metrics.amg_levels
               << " rho=" << solver_metrics.convergence_factor
@@ -523,10 +512,6 @@ public:
   }
 
 private:
-  const char *active_smoother_name() const {
-    return meshaware::to_string(options.amg_smoother);
-  }
-
   void run_batch(const double assembly_seconds, const std::uint64_t nonzeros) {
     unsigned int completed = 0;
     unsigned int skipped = 0;
@@ -558,7 +543,8 @@ private:
                   << " backend=" << meshaware::to_string(options.amg_backend)
                   << " boomeramg_profile="
                   << meshaware::to_string(options.boomeramg_profile)
-                  << " smoother=" << active_smoother_name()
+                  << " smoother="
+                  << meshaware::to_string(options.amg_smoother)
                   << " iterations=" << solver_metrics.iterations
                   << " amg_levels=" << solver_metrics.amg_levels
                   << " rho=" << solver_metrics.convergence_factor
@@ -1069,34 +1055,16 @@ private:
     return static_cast<std::uint64_t>(information.nz_used);
   }
 
-  void write_matrix(const std::filesystem::path &path) const {
-    if (path.has_parent_path())
-      std::filesystem::create_directories(path.parent_path());
-    PetscViewer viewer = nullptr;
-    meshaware::petsc_check(PetscViewerBinaryOpen(PETSC_COMM_SELF,
-                                                 path.string().c_str(),
-                                                 FILE_MODE_WRITE, &viewer),
-                           "PetscViewerBinaryOpen");
-    const PetscErrorCode view_error =
-        MatView(static_cast<Mat>(petsc_matrix), viewer);
-    const PetscErrorCode destroy_error = PetscViewerDestroy(&viewer);
-    meshaware::petsc_check(view_error, "MatView");
-    meshaware::petsc_check(destroy_error, "PetscViewerDestroy");
-  }
-
   std::string matrix_id() const {
-    std::ostringstream stream;
-    stream << "poly_l" << options.level << '_'
-           << meshaware::to_string(options.pattern) << "_e"
-           << slug_float(options.epsilon) << "_high_"
-           << meshaware::to_string(options.high_region);
-    return stream.str();
+    return meshaware::make_matrix_id(
+        "poly", options.level, meshaware::to_string(options.pattern),
+        options.epsilon, meshaware::to_string(options.high_region));
   }
 
   std::filesystem::path batch_record_path(const double theta,
                                           const unsigned int repeat) const {
-    const std::string sample_id = matrix_id() + "_theta_" + slug_float(theta) +
-                                  "_repeat_" + std::to_string(repeat);
+    const std::string sample_id =
+        meshaware::make_sample_id(matrix_id(), theta, repeat);
     return options.record_directory / (sample_id + ".json");
   }
 
@@ -1108,8 +1076,7 @@ private:
                     const std::uint64_t nonzeros) const {
     const std::string id = matrix_id();
     meshaware::ExperimentRecord record;
-    record.sample_id = id + "_theta_" + slug_float(theta) + "_repeat_" +
-                       std::to_string(repeat);
+    record.sample_id = meshaware::make_sample_id(id, theta, repeat);
     record.matrix_id = id;
     record.mesh_family = "polygonal";
     record.level = options.level;
@@ -1122,7 +1089,7 @@ private:
     record.amg_backend = meshaware::to_string(options.amg_backend);
     record.boomeramg_profile =
         meshaware::to_string(options.boomeramg_profile);
-    record.amg_smoother = active_smoother_name();
+    record.amg_smoother = meshaware::to_string(options.amg_smoother);
     record.amg_relaxation_weight =
         options.amg_smoother == meshaware::AmgSmoother::damped_jacobi
             ? options.jacobi_damping

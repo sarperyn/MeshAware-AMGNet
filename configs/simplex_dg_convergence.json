@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "simplex-dg-convergence",
+  "mesh_families": ["simplex-dg"],
+  "levels": [2, 3, 4],
+  "patterns": ["vertical_split"],
+  "epsilons": [0.0],
+  "theta_values": [0.24],
+  "repeats": 1,
+  "family_subdirectories": false
+}

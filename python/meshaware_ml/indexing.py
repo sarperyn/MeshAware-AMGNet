@@ -6,14 +6,13 @@ import os
 import statistics
 import tempfile
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
+from meshaware_data.artifacts import write_json_atomic
 from meshaware_data.schema import ExperimentConfig, load_experiment_config
-
-from .inventory import write_json_atomic
-
 
 INDEX_SCHEMA_VERSION = 1
 SPLIT_SCHEMA_VERSION = 1
@@ -28,7 +27,7 @@ def _float_token(value: float) -> str:
 
 def _stable_sample_id(matrix_id: str, theta: float) -> str:
     digest = hashlib.sha256(
-        f"{matrix_id}|{_float_token(theta)}".encode("utf-8")
+        f"{matrix_id}|{_float_token(theta)}".encode()
     ).hexdigest()
     return f"rho-{digest[:24]}"
 

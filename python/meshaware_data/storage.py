@@ -8,7 +8,6 @@ from typing import Any
 
 from .schema import ExperimentConfig
 
-
 PETSC_INDEX_BYTES = 4
 SCALAR_BYTES = 8
 ESTIMATED_RECORD_BYTES = 1536
@@ -31,6 +30,11 @@ def _family_size_model(mesh_family: str, level: int) -> dict[str, int | str]:
         dofs = (subdivisions + 1) ** 2
         nnz = 9 * dofs
         model = "structured_p1_conservative_nine_point_upper"
+    elif mesh_family == "simplex-dg":
+        cells = 2 * background_cells
+        dofs = 3 * cells
+        nnz = 12 * dofs
+        model = "structured_p1_sipg_conservative_12_entries_per_dof"
     elif mesh_family == "polygonal":
         cells = background_cells // 2
         dofs = 3 * cells

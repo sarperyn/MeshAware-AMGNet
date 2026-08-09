@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 
-
 FEATURE_SCHEMA_VERSION = 1
 
 

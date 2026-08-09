@@ -55,6 +55,17 @@ if(MESHAWARE_BUILD_DEALII)
     )
     deal_ii_setup_target(meshaware_diffusion_dealii)
 
+    add_executable(
+      meshaware_diffusion_simplex_dg
+      src/dealii/diffusion_simplex_dg.cpp
+    )
+    target_link_libraries(
+      meshaware_diffusion_simplex_dg
+      meshaware_core
+      meshaware_petsc
+    )
+    deal_ii_setup_target(meshaware_diffusion_simplex_dg)
+
     if(MESHAWARE_BUILD_POLYDEAL)
       find_path(
         POLYDEAL_INCLUDE_DIR
@@ -250,6 +261,26 @@ if(MESHAWARE_BUILD_DEALII)
           --jacobi-damping 0.6666666666666666
       )
       add_test(
+        NAME dealii_simplex_dg_smoke
+        COMMAND meshaware_diffusion_simplex_dg
+          --mesh-family simplex-dg
+          --level 1
+          --epsilon 0
+          --pattern vertical_split
+          --theta 0.24
+          --verify
+      )
+      add_test(
+        NAME dealii_simplex_dg_heterogeneous
+        COMMAND meshaware_diffusion_simplex_dg
+          --mesh-family simplex-dg
+          --level 1
+          --epsilon 9.5
+          --pattern checkerboard_4x4
+          --theta 0.24
+          --verify
+      )
+      add_test(
         NAME dealii_assemble_only
         COMMAND meshaware_diffusion_dealii
           --mesh-family simplex
@@ -264,6 +295,8 @@ if(MESHAWARE_BUILD_DEALII)
         dealii_quadrilateral_smoke
         dealii_simplex_smoke
         dealii_damped_jacobi_smoke
+        dealii_simplex_dg_smoke
+        dealii_simplex_dg_heterogeneous
         dealii_assemble_only
         PROPERTIES ENVIRONMENT "OMPI_MCA_btl=self"
       )

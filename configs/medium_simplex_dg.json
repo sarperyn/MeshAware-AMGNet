@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "name": "medium-simplex-dg",
+  "mesh_families": ["simplex-dg"],
+  "levels": [3, 5, 8, 10],
+  "theta": {"start": 0.02, "stop": 0.90, "count": 10},
+  "repeats": 1,
+  "family_subdirectories": false
+}

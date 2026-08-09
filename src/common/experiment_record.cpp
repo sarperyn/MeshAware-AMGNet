@@ -1,5 +1,6 @@
 #include "meshaware/experiment_record.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -10,6 +11,15 @@
 
 namespace meshaware {
 namespace {
+std::string slug_float(const double value) {
+  std::ostringstream stream;
+  stream << std::setprecision(10) << value;
+  std::string result = stream.str();
+  std::replace(result.begin(), result.end(), '.', 'p');
+  std::replace(result.begin(), result.end(), '-', 'm');
+  return result;
+}
+
 std::string json_escape(const std::string_view value) {
   std::ostringstream escaped;
   for (const char character : value) {
@@ -96,6 +106,23 @@ void write_json(std::ostream &output, const ExperimentRecord &record) {
          << "}\n";
 }
 } // namespace
+
+std::string make_matrix_id(const std::string_view prefix,
+                           const unsigned int level,
+                           const std::string_view pattern,
+                           const double epsilon,
+                           const std::string_view high_region) {
+  std::ostringstream stream;
+  stream << prefix << "_l" << level << '_' << pattern << "_e"
+         << slug_float(epsilon) << "_high_" << high_region;
+  return stream.str();
+}
+
+std::string make_sample_id(const std::string_view matrix_id,
+                           const double theta, const unsigned int repeat) {
+  return std::string(matrix_id) + "_theta_" + slug_float(theta) +
+         "_repeat_" + std::to_string(repeat);
+}
 
 void write_experiment_record(const ExperimentRecord &record,
                              const std::filesystem::path &destination) {

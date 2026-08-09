@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -6,16 +5,11 @@ import json
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from meshaware_ml.inference import (
-    PredictorPaths,
-    RhoPredictor,
-    parse_theta_values,
-    write_json_atomic,
-)
+from meshaware_data.artifacts import write_json_atomic
+from meshaware_ml.inference import PredictorPaths, RhoPredictor, parse_theta_values
 
 
 def _resolve(raw: str) -> Path:

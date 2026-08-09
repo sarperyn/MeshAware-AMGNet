@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -13,12 +12,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from utils.data import SampleRecordRepository
-
+from meshaware_data.reporting import SampleRecordRepository
 
 DEFAULT_INPUT_GLOB = "datasets/diffusion/large/**/diffusion_reports/*.csv"
 PATTERN_TITLES = {
@@ -334,7 +331,6 @@ def _write_svg(
     plot_pad_t = 28
     plot_pad_b = 42
     colors = INTENSE_COLORS
-    marks = ("circle", "triangle", "square", "diamond")
     all_y = [
         cell.mean + cell.std
         for key, cell in stats.items()
@@ -366,11 +362,20 @@ def _write_svg(
         y_max = max(values) if values else global_max
         y_max = max(y_max * 1.12, 1e-12)
 
-        def sx(theta: float) -> float:
-            return px0 + (theta - x_min) / (x_max - x_min) * pw
+        def sx(
+            theta: float,
+            pixel_left: float = px0,
+            pixel_width: float = pw,
+        ) -> float:
+            return pixel_left + (theta - x_min) / (x_max - x_min) * pixel_width
 
-        def sy(value: float) -> float:
-            return py0 + ph - value / y_max * ph
+        def sy(
+            value: float,
+            pixel_top: float = py0,
+            pixel_height: float = ph,
+            maximum: float = y_max,
+        ) -> float:
+            return pixel_top + pixel_height - value / maximum * pixel_height
 
         svg.append(f'<rect x="{px0:.1f}" y="{py0:.1f}" width="{pw:.1f}" height="{ph:.1f}" fill="none" stroke="black" stroke-width="1"/>')
         svg.append(_svg_text(px0 + pw / 2, y0 + 14, f"h={_format_h_title(h)}", size=11))

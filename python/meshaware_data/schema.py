@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from itertools import product
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 PATTERNS = (
     "vertical_split",
@@ -13,7 +13,7 @@ PATTERNS = (
     "vertical_stripes_4",
     "checkerboard_4x4",
 )
-MESH_FAMILIES = ("quadrilateral", "simplex", "polygonal")
+MESH_FAMILIES = ("quadrilateral", "simplex", "simplex-dg", "polygonal")
 AMG_BACKENDS = ("boomeramg", "polydeal-agglomeration")
 BOOMERAMG_PROFILES = ("default", "polygonal-nodal")
 AMG_SMOOTHERS = (
@@ -230,8 +230,13 @@ def load_experiment_config(
 
     with Path(common_path).open(encoding="utf-8") as handle:
         merged: dict[str, Any] = json.load(handle)
+    if merged.get("schema_version") != 1:
+        raise ValueError(f"Unsupported configuration schema in {common_path}")
     with experiment_path.open(encoding="utf-8") as handle:
-        merged.update(json.load(handle))
+        experiment = json.load(handle)
+    if experiment.get("schema_version") != 1:
+        raise ValueError(f"Unsupported configuration schema in {experiment_path}")
+    merged.update(experiment)
 
     theta_values = merged.get("theta_values")
     if theta_values is None:

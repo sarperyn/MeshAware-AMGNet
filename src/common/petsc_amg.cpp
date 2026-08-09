@@ -112,6 +112,20 @@ void petsc_check(const PetscErrorCode error, const char *operation) {
                              " (error " + std::to_string(error) + ")");
 }
 
+void write_petsc_matrix(const Mat matrix,
+                        const std::filesystem::path &path) {
+  if (path.has_parent_path())
+    std::filesystem::create_directories(path.parent_path());
+  PetscViewer viewer = nullptr;
+  petsc_check(PetscViewerBinaryOpen(PETSC_COMM_SELF, path.string().c_str(),
+                                    FILE_MODE_WRITE, &viewer),
+              "PetscViewerBinaryOpen");
+  const PetscErrorCode view_error = MatView(matrix, viewer);
+  const PetscErrorCode destroy_error = PetscViewerDestroy(&viewer);
+  petsc_check(view_error, "MatView");
+  petsc_check(destroy_error, "PetscViewerDestroy");
+}
+
 SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
                                     const Vec solution,
                                     const AmgSolverOptions &options) {

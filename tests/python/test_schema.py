@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
@@ -13,6 +13,15 @@ from meshaware_data.schema import load_experiment_config
 
 
 class ExperimentConfigTests(unittest.TestCase):
+    def test_unsupported_config_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "experiment.json"
+            config_path.write_text('{"schema_version": 2}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsupported configuration"):
+                load_experiment_config(
+                    config_path, REPO_ROOT / "configs" / "common.json"
+                )
+
     def load(self, name: str):
         return load_experiment_config(REPO_ROOT / "configs" / f"{name}.json")
 
@@ -75,6 +84,18 @@ class ExperimentConfigTests(unittest.TestCase):
         self.assertEqual(smoke.amg_smoother, "chebyshev")
         self.assertEqual(smoke.trial_count, 1)
         self.assertEqual(convergence.levels, (4, 5, 6))
+
+    def test_simplex_dg_configs_are_isolated(self) -> None:
+        smoke = self.load("simplex_dg_smoke")
+        convergence = self.load("simplex_dg_convergence")
+        medium = self.load("medium_simplex_dg")
+        self.assertEqual(smoke.mesh_families, ("simplex-dg",))
+        self.assertEqual(smoke.trial_count, 1)
+        self.assertFalse(smoke.family_subdirectories)
+        self.assertEqual(convergence.levels, (2, 3, 4))
+        self.assertEqual(medium.levels, (3, 5, 8, 10))
+        self.assertEqual(medium.trial_count, 1920)
+        self.assertEqual(medium.amg_backend, "boomeramg")
 
     def test_flat_output_requires_one_mesh_family(self) -> None:
         config = self.load("medium_polygonal_chebyshev")

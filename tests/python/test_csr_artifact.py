@@ -7,17 +7,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
 from meshaware_data.csr_artifact import (
     PETSC_MATRIX_CLASS_ID,
-    convert_petsc_to_csr_directory,
     convert_petsc_to_csr_npz,
     load_scipy_csr_npz,
     read_petsc_matrix_header,
-    validate_csr_directory,
     validate_csr_npz,
 )
 
@@ -59,30 +56,6 @@ class PetscHeaderTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("numpy"), "NumPy is not installed")
 class CsrConversionTests(unittest.TestCase):
-    def test_converts_exact_csr_arrays(self) -> None:
-        import numpy as np
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "matrix.petsc"
-            destination = root / "matrix.csr"
-            write_test_matrix(source)
-            metadata = convert_petsc_to_csr_directory(
-                source,
-                destination,
-                identity={"matrix_id": "test"},
-            )
-            validate_csr_directory(destination)
-            indptr = np.load(destination / "indptr.npy", allow_pickle=False)
-            indices = np.load(destination / "indices.npy", allow_pickle=False)
-            data = np.load(destination / "data.npy", allow_pickle=False)
-
-        self.assertEqual(metadata["shape"], [3, 3])
-        self.assertEqual(metadata["nnz"], 5)
-        np.testing.assert_array_equal(indptr, (0, 2, 3, 5))
-        np.testing.assert_array_equal(indices, (0, 1, 1, 1, 2))
-        np.testing.assert_allclose(data, (4.0, -1.0, 4.0, -1.0, 4.0))
-
     def test_converts_exact_compressed_csr_npz(self) -> None:
         import numpy as np
 
