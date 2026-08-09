@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
+from meshaware_data.artifacts import write_json_atomic
 
 from .pooling import (
     PAPER_POOLING_SPEC,
@@ -18,27 +18,8 @@ from .pooling import (
     write_feature_artifact_atomic,
 )
 
-
 SNAPSHOT_SCHEMA_VERSION = 1
 FEATURE_MANIFEST_SCHEMA_VERSION = 1
-
-
-def write_json_atomic(path: str | Path, value: Any) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.tmp-", dir=path.parent
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _file_entry(path: Path, dataset_root: Path, tier: str, family: str) -> dict[str, Any]:
@@ -283,11 +264,3 @@ def build_feature_cache(
     )
     write_json_atomic(manifest_path, manifest)
     return manifest, manifest_path
-
-
-def load_feature_manifest(path: str | Path) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    if manifest.get("schema_version") != FEATURE_MANIFEST_SCHEMA_VERSION:
-        raise ValueError(f"unsupported feature manifest schema in {path}")
-    return manifest

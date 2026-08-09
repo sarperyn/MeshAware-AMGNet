@@ -6,37 +6,29 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
+from meshaware_data.artifacts import file_sha256, write_json_atomic
 from meshaware_data.csr_artifact import (
     convert_petsc_to_csr_npz,
     read_petsc_matrix_header,
 )
-
-from .dataset import file_sha256
-from .inference import RhoPredictor, parse_theta_values, write_json_atomic
-
-
-WORKFLOW_SCHEMA_VERSION = 1
-EXECUTABLES = {
-    "simplex": "meshaware_diffusion_dealii",
-    "polygonal": "meshaware_diffusion_polydeal",
-}
-PATTERNS = frozenset(
-    {
-        "vertical_split",
-        "checkerboard_2x2",
-        "vertical_stripes_4",
-        "checkerboard_4x4",
-    }
+from meshaware_data.identifiers import matrix_id
+from meshaware_data.schema import PATTERNS
+from meshaware_data.solver import (
+    EXECUTABLE_NAMES,
+    base_solver_command,
+    solver_environment,
 )
 
+from .inference import RhoPredictor, parse_theta_values
 
-def slug_float(value: float) -> str:
-    return f"{value:.10g}".replace("-", "m").replace(".", "p")
+WORKFLOW_SCHEMA_VERSION = 1
+SUPPORTED_MESH_FAMILIES = frozenset({"simplex", "polygonal"})
 
 
 @dataclass(frozen=True)
@@ -53,9 +45,9 @@ class AMGProblem:
     warmup_runs: int = 0
 
     def validate(self) -> None:
-        if self.mesh_family not in EXECUTABLES:
+        if self.mesh_family not in SUPPORTED_MESH_FAMILIES:
             raise ValueError(
-                f"Phase 5 supports {sorted(EXECUTABLES)}, "
+                f"Phase 5 supports {sorted(SUPPORTED_MESH_FAMILIES)}, "
                 f"not {self.mesh_family!r}"
             )
         if self.pattern not in PATTERNS:
@@ -77,10 +69,12 @@ class AMGProblem:
 
     @property
     def matrix_id(self) -> str:
-        prefix = "simplex" if self.mesh_family == "simplex" else "poly"
-        return (
-            f"{prefix}_l{self.level}_{self.pattern}_"
-            f"e{slug_float(self.epsilon)}_high_{self.high_region}"
+        return matrix_id(
+            mesh_family=self.mesh_family,
+            level=self.level,
+            pattern=self.pattern,
+            epsilon=self.epsilon,
+            high_region=self.high_region,
         )
 
     @property
@@ -96,25 +90,17 @@ class AMGProblem:
 
 
 def _base_command(executable: Path, problem: AMGProblem) -> list[str]:
-    return [
-        str(executable),
-        "--mesh-family",
-        problem.mesh_family,
-        "--level",
-        str(problem.level),
-        "--epsilon",
-        str(problem.epsilon),
-        "--pattern",
-        problem.pattern,
-        "--high-region",
-        problem.high_region,
-        "--rtol",
-        str(problem.relative_tolerance),
-        "--atol",
-        str(problem.absolute_tolerance),
-        "--max-iterations",
-        str(problem.maximum_iterations),
-    ]
+    return base_solver_command(
+        executable,
+        mesh_family=problem.mesh_family,
+        level=problem.level,
+        epsilon=problem.epsilon,
+        pattern=problem.pattern,
+        high_region=problem.high_region,
+        relative_tolerance=problem.relative_tolerance,
+        absolute_tolerance=problem.absolute_tolerance,
+        maximum_iterations=problem.maximum_iterations,
+    )
 
 
 def assemble_command(
@@ -151,20 +137,13 @@ def solve_command(
     ]
 
 
-def _run_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    environment.setdefault("OMPI_MCA_btl", "self")
-    return environment
-
-
 def _run_command(command: Sequence[str]) -> dict[str, Any]:
     completed = subprocess.run(
         list(command),
         check=True,
-        env=_run_environment(),
+        env=solver_environment(),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     if completed.stdout:
         print(completed.stdout, end="", flush=True)
@@ -220,7 +199,7 @@ def run_amg_workflow(
     candidates = parse_theta_values(theta_values)
     build_dir = Path(build_dir).resolve()
     output_dir = Path(output_dir).resolve()
-    executable = build_dir / EXECUTABLES[problem.mesh_family]
+    executable = build_dir / EXECUTABLE_NAMES[problem.mesh_family]
     if not executable.is_file():
         raise FileNotFoundError(f"solver executable does not exist: {executable}")
     if output_dir.exists():

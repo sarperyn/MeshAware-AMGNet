@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections import OrderedDict
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 import torch
@@ -13,17 +13,8 @@ from torch.utils.data import Dataset
 
 from .pooling import PAPER_POOLING_SPEC, validate_feature_artifact
 
-
 INDEX_SCHEMA_VERSION = 1
 ALLOWED_SPLITS = frozenset({"train", "validation", "test"})
-
-
-def file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def load_index_rows(
@@ -113,84 +104,44 @@ class MatrixViewCache:
         return len(self._views)
 
 
-class RhoDataset(Dataset[dict[str, Any]]):
-    """Canonical rho samples backed by source-hash-cached matrix views."""
-
-    def __init__(
-        self,
-        samples_path: str | Path,
-        dataset_root: str | Path,
-        *,
-        splits: Sequence[str],
-        cache: MatrixViewCache | None = None,
-    ):
-        self.samples_path = Path(samples_path).resolve()
-        self.rows = load_index_rows(self.samples_path, splits=splits)
-        self.splits = frozenset(splits)
-        self.cache = (
-            cache if cache is not None else MatrixViewCache(dataset_root)
-        )
-        self._validate_rows()
-
-    def _validate_rows(self) -> None:
-        required = {
-            "sample_id",
-            "matrix_id",
-            "matrix_sha256",
-            "feature_path",
-            "mesh_family",
-            "h_nominal",
-            "theta",
-            "rho_mean",
-            "split",
-        }
-        for index, row in enumerate(self.rows):
-            missing = required - row.keys()
-            if missing:
-                raise ValueError(
-                    f"sample {index} is missing fields: {sorted(missing)}"
-                )
-            if row["split"] not in self.splits:
-                raise ValueError("sample escaped requested split filter")
-            if row["mesh_family"] not in {"simplex", "polygonal"}:
-                raise ValueError(
-                    f"unsupported mesh family: {row['mesh_family']!r}"
-                )
-            source_hash = str(row["matrix_sha256"])
-            if len(source_hash) != 64:
-                raise ValueError(f"invalid matrix SHA-256: {source_hash!r}")
-            values = [
-                float(row["h_nominal"]),
-                float(row["theta"]),
-                float(row["rho_mean"]),
-            ]
-            if not all(math.isfinite(value) for value in values):
-                raise ValueError(f"non-finite sample values for {row['sample_id']}")
-            if values[0] <= 0.0:
-                raise ValueError(f"h_nominal must be positive for {row['sample_id']}")
-
-    def __len__(self) -> int:
-        return len(self.rows)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        row = self.rows[index]
-        view = self.cache.get(
-            str(row["feature_path"]), str(row["matrix_sha256"])
-        )
-        mesh_scale = -math.log2(float(row["h_nominal"]))
-        scalars = torch.tensor(
-            [mesh_scale, float(row["theta"])], dtype=torch.float32
-        )
-        target = torch.tensor(float(row["rho_mean"]), dtype=torch.float32)
-        return {
-            "view": view,
-            "scalars": scalars,
-            "target": target,
-            "sample_id": str(row["sample_id"]),
-            "matrix_id": str(row["matrix_id"]),
-            "matrix_sha256": str(row["matrix_sha256"]),
-            "mesh_family": str(row["mesh_family"]),
-        }
+def _validate_rows(
+    rows: list[dict[str, Any]], splits: frozenset[str]
+) -> None:
+    required = {
+        "sample_id",
+        "matrix_id",
+        "matrix_sha256",
+        "feature_path",
+        "mesh_family",
+        "h_nominal",
+        "theta",
+        "rho_mean",
+        "split",
+    }
+    for index, row in enumerate(rows):
+        missing = required - row.keys()
+        if missing:
+            raise ValueError(
+                f"sample {index} is missing fields: {sorted(missing)}"
+            )
+        if row["split"] not in splits:
+            raise ValueError("sample escaped requested split filter")
+        if row["mesh_family"] not in {"simplex", "polygonal"}:
+            raise ValueError(
+                f"unsupported mesh family: {row['mesh_family']!r}"
+            )
+        source_hash = str(row["matrix_sha256"])
+        if len(source_hash) != 64:
+            raise ValueError(f"invalid matrix SHA-256: {source_hash!r}")
+        values = [
+            float(row["h_nominal"]),
+            float(row["theta"]),
+            float(row["rho_mean"]),
+        ]
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"non-finite sample values for {row['sample_id']}")
+        if values[0] <= 0.0:
+            raise ValueError(f"h_nominal must be positive for {row['sample_id']}")
 
 
 class GroupedRhoDataset(Dataset[dict[str, Any]]):
@@ -218,7 +169,7 @@ class GroupedRhoDataset(Dataset[dict[str, Any]]):
             for _, group in sorted(grouped.items())
         ]
         self.rows = [row for group in self.groups for row in group]
-        RhoDataset._validate_rows(self)
+        _validate_rows(self.rows, self.splits)
         self._validate_groups()
 
     def _validate_groups(self) -> None:
@@ -359,7 +310,7 @@ class HashGroupBatchSampler:
         return len(self.group_sizes)
 
 
-def assert_disjoint_hashes(*datasets: RhoDataset) -> None:
+def assert_disjoint_hashes(*datasets: GroupedRhoDataset) -> None:
     owners: dict[str, int] = {}
     for dataset_index, dataset in enumerate(datasets):
         for row in dataset.rows:

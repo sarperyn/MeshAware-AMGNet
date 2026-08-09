@@ -2,6 +2,7 @@
 
 #include <petscksp.h>
 
+#include <filesystem>
 #include <string_view>
 
 namespace meshaware {
@@ -56,6 +57,8 @@ struct SolverMetrics {
 };
 
 void petsc_check(PetscErrorCode error, const char *operation);
+
+void write_petsc_matrix(Mat matrix, const std::filesystem::path &path);
 
 SolverMetrics solve_with_boomer_amg(Mat matrix, Vec right_hand_side,
                                     Vec solution,

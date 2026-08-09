@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
@@ -13,6 +13,15 @@ from meshaware_data.schema import load_experiment_config
 
 
 class ExperimentConfigTests(unittest.TestCase):
+    def test_unsupported_config_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "experiment.json"
+            config_path.write_text('{"schema_version": 2}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsupported configuration"):
+                load_experiment_config(
+                    config_path, REPO_ROOT / "configs" / "common.json"
+                )
+
     def load(self, name: str):
         return load_experiment_config(REPO_ROOT / "configs" / f"{name}.json")
 

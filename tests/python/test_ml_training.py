@@ -11,7 +11,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
@@ -19,7 +18,6 @@ from meshaware_ml.dataset import (
     GroupedRhoDataset,
     HashGroupBatchSampler,
     MatrixViewCache,
-    RhoDataset,
     assert_disjoint_hashes,
     collate_matrix_groups,
 )
@@ -221,12 +219,12 @@ def tiny_run_config(
 
 
 class DatasetTests(unittest.TestCase):
-    def test_dataset_loads_expected_scalars_and_reuses_matrix_view(self) -> None:
+    def test_grouped_dataset_loads_scalars_and_reuses_matrix_view(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dataset_root, samples_path, _ = write_synthetic_index(root)
             cache = MatrixViewCache(dataset_root, capacity=8)
-            dataset = RhoDataset(
+            dataset = GroupedRhoDataset(
                 samples_path,
                 dataset_root,
                 splits=("train",),
@@ -234,15 +232,18 @@ class DatasetTests(unittest.TestCase):
             )
             first = dataset[0]
             second = dataset[1]
-            self.assertEqual(len(dataset), 4)
+            self.assertEqual(len(dataset), 2)
+            self.assertEqual(dataset.sample_count, 4)
             self.assertEqual(tuple(first["view"].shape), (3, 100, 100))
             self.assertTrue(
                 torch.equal(
-                    first["scalars"], torch.tensor([3.0, 0.2])
+                    first["scalars"],
+                    torch.tensor([[3.0, 0.2], [3.0, 0.4]]),
                 )
             )
-            self.assertIs(first["view"], second["view"])
-            self.assertEqual(len(cache), 1)
+            self.assertIs(first["view"], dataset[0]["view"])
+            self.assertIsNot(first["view"], second["view"])
+            self.assertEqual(len(cache), 2)
 
     def test_hash_group_batching_computes_one_view_for_multiple_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -279,10 +280,10 @@ class DatasetTests(unittest.TestCase):
             samples_path.write_text(
                 "".join(json.dumps(row) + "\n" for row in rows)
             )
-            train_data = RhoDataset(
+            train_data = GroupedRhoDataset(
                 samples_path, dataset_root, splits=("train",)
             )
-            validation_data = RhoDataset(
+            validation_data = GroupedRhoDataset(
                 samples_path, dataset_root, splits=("validation",)
             )
             with self.assertRaisesRegex(ValueError, "leakage"):

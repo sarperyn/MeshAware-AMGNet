@@ -1,8 +1,5 @@
 {
   "schema_version": 1,
-  "problem": "heterogeneous_diffusion",
-  "domain": [[-1.0, 1.0], [-1.0, 1.0]],
-  "finite_element_degree": 1,
   "patterns": [
     "vertical_split",
     "checkerboard_2x2",

@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-from .inventory import write_json_atomic
+from meshaware_data.artifacts import write_json_atomic
 
 
 def _git_state(repo_root: Path) -> dict[str, Any]:
@@ -165,32 +164,32 @@ def build_audit_and_report(
     lines.extend(
         [
             "",
-            "The inventory was frozen before feature processing. Files finalized "
-            "after this boundary were not admitted.",
+            ("The inventory was frozen before feature processing. Files finalized "
+            "after this boundary were not admitted."),
             "",
             "## Phase 1: pooled matrix features",
             "",
-            "- Representation: `pp+np+sum`, `100×100`, count-average, "
-            "signed-log1p/max-abs.",
+            ("- Representation: `pp+np+sum`, `100×100`, count-average, "
+            "signed-log1p/max-abs."),
             f"- Matrix references: {feature_manifest['matrix_reference_count']}",
             f"- Unique source hashes: {feature_manifest['unique_matrix_hash_count']}",
             f"- Features created: {feature_manifest['features_created']}",
             f"- Features reused: {feature_manifest['features_reused']}",
-            f"- Features originating from this snapshot: "
-            f"{feature_manifest['features_originating_from_snapshot']}",
+            (f"- Features originating from this snapshot: "
+            f"{feature_manifest['features_originating_from_snapshot']}"),
             f"- Feature storage: {feature_manifest['feature_bytes'] / 1024**2:.2f} MiB",
-            f"- Current validation/build pass: "
-            f"{feature_manifest['elapsed_seconds']:.2f} s",
-            f"- Initial artifact materialization span: "
-            f"{feature_manifest['artifact_mtime_span_seconds']:.2f} s",
+            (f"- Current validation/build pass: "
+            f"{feature_manifest['elapsed_seconds']:.2f} s"),
+            (f"- Initial artifact materialization span: "
+            f"{feature_manifest['artifact_mtime_span_seconds']:.2f} s"),
             "",
             "## Phase 2: canonical samples and splits",
             "",
             f"- Aggregated samples: {total}",
             f"- Named matrices: {index_summary['audit']['named_matrices']}",
             f"- Matrix content hashes: {index_summary['audit']['matrix_hashes']}",
-            f"- Duplicate tier records removed: "
-            f"{index_summary['audit']['duplicate_records_removed']}",
+            (f"- Duplicate tier records removed: "
+            f"{index_summary['audit']['duplicate_records_removed']}"),
             "",
         ]
     )
@@ -244,8 +243,8 @@ def build_audit_and_report(
             "",
             "## Matrix-only target ambiguity",
             "",
-            f"- Identical matrix-hash/theta groups with differing rho: "
-            f"{ambiguity['identical_hash_theta_groups_with_different_targets']}",
+            (f"- Identical matrix-hash/theta groups with differing rho: "
+            f"{ambiguity['identical_hash_theta_groups_with_different_targets']}"),
             f"- Maximum rho spread: `{ambiguity['maximum_rho_spread']:.12g}`",
             f"- Mean rho spread: `{ambiguity['mean_rho_spread']:.12g}`",
         ]
@@ -263,11 +262,11 @@ def build_audit_and_report(
             "## Verification",
             "",
             f"- Status: `{verification_status}`",
-            f"- Python: `{environment['python']}` at "
-            f"`{environment['python_executable']}`",
-            f"- NumPy `{environment['numpy']}`, SciPy `{environment['scipy']}`, "
+            (f"- Python: `{environment['python']}` at "
+            f"`{environment['python_executable']}`"),
+            (f"- NumPy `{environment['numpy']}`, SciPy `{environment['scipy']}`, "
             f"scikit-learn `{environment['scikit_learn']}`, "
-            f"PyTorch `{environment['torch']}`",
+            f"PyTorch `{environment['torch']}`"),
             f"- Git revision: `{git['revision']}`",
             f"- Worktree dirty before/after this implementation: `{git['dirty']}`",
             "",
@@ -282,9 +281,9 @@ def build_audit_and_report(
             "  --report reports/ml_phase_1_2_report.md",
             "```",
             "",
-            "Validated existing features are reused. Existing matrix hashes retain "
+            ("Validated existing features are reused. Existing matrix hashes retain "
             "their split; only new hashes are assigned against the current "
-            "85/5/10 stratification deficits.",
+            "85/5/10 stratification deficits."),
             "",
         ]
     )

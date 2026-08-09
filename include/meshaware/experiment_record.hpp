@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace meshaware {
 
@@ -44,6 +45,13 @@ struct ExperimentRecord {
   std::string matrix_format = "petsc_binary";
   std::filesystem::path matrix_path;
 };
+
+std::string make_matrix_id(std::string_view prefix, unsigned int level,
+                           std::string_view pattern, double epsilon,
+                           std::string_view high_region);
+
+std::string make_sample_id(std::string_view matrix_id, double theta,
+                           unsigned int repeat);
 
 void write_experiment_record(const ExperimentRecord &record,
                              const std::filesystem::path &destination);

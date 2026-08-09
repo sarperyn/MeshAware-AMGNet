@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import struct
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .artifacts import file_sha256
 
 PETSC_MATRIX_CLASS_ID = 1211216
 CSR_NPZ_SCHEMA_VERSION = 1
@@ -105,14 +105,6 @@ def read_petsc_matrix_header(
     )
 
 
-def sha256_file(path: str | Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        while chunk := handle.read(chunk_bytes):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _require_numpy():
     try:
         import numpy
@@ -136,172 +128,13 @@ def _copy_memmap_in_chunks(
     for start in range(0, len(source), chunk_items):
         stop = min(start + chunk_items, len(source))
         chunk = source[start:stop]
-        if validate_columns is not None and len(chunk):
-            if int(chunk.min()) < 0 or int(chunk.max()) >= validate_columns:
-                raise ValueError("PETSc matrix contains an out-of-range column index")
+        if validate_columns is not None and len(chunk) and (
+            int(chunk.min()) < 0 or int(chunk.max()) >= validate_columns
+        ):
+            raise ValueError("PETSc matrix contains an out-of-range column index")
         if validate_finite and not bool(np.isfinite(chunk).all()):
             raise ValueError("PETSc matrix contains a non-finite value")
         destination[start:stop] = chunk
-
-
-def convert_petsc_to_csr_directory(
-    source: str | Path,
-    destination: str | Path,
-    *,
-    identity: dict[str, Any] | None = None,
-    overwrite: bool = False,
-) -> dict[str, Any]:
-    np = _require_numpy()
-    source = Path(source)
-    destination = Path(destination)
-    header = read_petsc_matrix_header(source)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and not overwrite:
-        raise FileExistsError(destination)
-
-    temporary = Path(
-        tempfile.mkdtemp(
-            prefix=f".{destination.name}.tmp-", dir=str(destination.parent)
-        )
-    )
-    try:
-        source_integer_dtype = _source_integer_dtype(header)
-        row_counts = np.memmap(
-            source,
-            mode="r",
-            dtype=source_integer_dtype,
-            offset=header.row_counts_offset,
-            shape=(header.rows,),
-        )
-        source_indices = np.memmap(
-            source,
-            mode="r",
-            dtype=source_integer_dtype,
-            offset=header.column_indices_offset,
-            shape=(header.nnz,),
-        )
-        source_data = np.memmap(
-            source,
-            mode="r",
-            dtype=_source_scalar_dtype(header),
-            offset=header.values_offset,
-            shape=(header.nnz,),
-        )
-
-        indptr = np.lib.format.open_memmap(
-            temporary / "indptr.npy",
-            mode="w+",
-            dtype=np.dtype("<i8"),
-            shape=(header.rows + 1,),
-        )
-        indptr[0] = 0
-        np.cumsum(row_counts, dtype=np.int64, out=indptr[1:])
-        if int(indptr[-1]) != header.nnz:
-            raise ValueError(
-                "PETSc row nonzero counts do not sum to the header nnz"
-            )
-
-        index_dtype = np.dtype("<i4" if header.integer_bytes == 4 else "<i8")
-        indices = np.lib.format.open_memmap(
-            temporary / "indices.npy",
-            mode="w+",
-            dtype=index_dtype,
-            shape=(header.nnz,),
-        )
-        _copy_memmap_in_chunks(
-            source_indices, indices, validate_columns=header.columns
-        )
-
-        data = np.lib.format.open_memmap(
-            temporary / "data.npy",
-            mode="w+",
-            dtype=np.dtype("<f8"),
-            shape=(header.nnz,),
-        )
-        _copy_memmap_in_chunks(source_data, data, validate_finite=True)
-        np.save(
-            temporary / "shape.npy",
-            np.asarray((header.rows, header.columns), dtype=np.int64),
-            allow_pickle=False,
-        )
-
-        indptr.flush()
-        indices.flush()
-        data.flush()
-        del indptr, indices, data, row_counts, source_indices, source_data
-
-        arrays = {
-            name: {
-                "path": f"{name}.npy",
-                "dtype": dtype,
-                "items": items,
-                "bytes": (temporary / f"{name}.npy").stat().st_size,
-            }
-            for name, dtype, items in (
-                ("indptr", "int64", header.rows + 1),
-                (
-                    "indices",
-                    "int32" if header.integer_bytes == 4 else "int64",
-                    header.nnz,
-                ),
-                ("data", "float64", header.nnz),
-                ("shape", "int64", 2),
-            )
-        }
-        metadata: dict[str, Any] = {
-            "schema_version": 1,
-            "format": "meshaware_csr_directory",
-            "shape": [header.rows, header.columns],
-            "nnz": header.nnz,
-            "arrays": arrays,
-            "source": {
-                "path": str(source),
-                "format": "petsc_binary",
-                "bytes": source.stat().st_size,
-                "sha256": sha256_file(source),
-                "petsc_header": asdict(header),
-            },
-        }
-        if identity:
-            metadata["identity"] = identity
-        with (temporary / "metadata.json").open("w", encoding="utf-8") as handle:
-            json.dump(metadata, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-
-        validate_csr_directory(temporary)
-        if destination.exists():
-            shutil.rmtree(destination)
-        temporary.rename(destination)
-        return metadata
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-
-
-def validate_csr_directory(path: str | Path) -> dict[str, Any]:
-    np = _require_numpy()
-    path = Path(path)
-    with (path / "metadata.json").open(encoding="utf-8") as handle:
-        metadata = json.load(handle)
-    if metadata.get("schema_version") != 1:
-        raise ValueError(f"Unsupported CSR artifact schema in {path}")
-
-    indptr = np.load(path / "indptr.npy", mmap_mode="r", allow_pickle=False)
-    indices = np.load(path / "indices.npy", mmap_mode="r", allow_pickle=False)
-    data = np.load(path / "data.npy", mmap_mode="r", allow_pickle=False)
-    shape = np.load(path / "shape.npy", mmap_mode="r", allow_pickle=False)
-    rows, columns = (int(value) for value in shape)
-    nnz = int(metadata["nnz"])
-    if (
-        list(metadata["shape"]) != [rows, columns]
-        or indptr.shape != (rows + 1,)
-        or indices.shape != (nnz,)
-        or data.shape != (nnz,)
-        or int(indptr[0]) != 0
-        or int(indptr[-1]) != nnz
-    ):
-        raise ValueError(f"Inconsistent CSR artifact arrays in {path}")
-    return metadata
 
 
 def convert_petsc_to_csr_npz(
@@ -386,7 +219,7 @@ def convert_petsc_to_csr_npz(
         )
         _copy_memmap_in_chunks(source_data, data, validate_finite=True)
         shape = np.asarray((header.rows, header.columns), dtype=np.int64)
-        source_sha256 = sha256_file(source)
+        source_sha256 = file_sha256(source, chunk_bytes=8 * 1024 * 1024)
         identity_json = json.dumps(
             identity or {}, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
@@ -539,19 +372,3 @@ def load_scipy_csr_npz(path: str | Path):
         indices = archive["indices"]
         data = archive["data"]
     return csr_matrix((data, indices, indptr), shape=shape, copy=False)
-
-
-def load_scipy_csr(path: str | Path):
-    np = _require_numpy()
-    try:
-        from scipy.sparse import csr_matrix
-    except ModuleNotFoundError as error:
-        raise RuntimeError("Loading as a SciPy matrix requires SciPy") from error
-    path = Path(path)
-    metadata = validate_csr_directory(path)
-    indptr = np.load(path / "indptr.npy", mmap_mode="r", allow_pickle=False)
-    indices = np.load(path / "indices.npy", mmap_mode="r", allow_pickle=False)
-    data = np.load(path / "data.npy", mmap_mode="r", allow_pickle=False)
-    return csr_matrix(
-        (data, indices, indptr), shape=tuple(metadata["shape"]), copy=False
-    )

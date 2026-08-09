@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -12,12 +11,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from utils.data import SampleRecordRepository
-
+from meshaware_data.reporting import SampleRecordRepository
 
 DEFAULT_INPUT_GLOB = "datasets/diffusion/large/**/diffusion_reports/*.csv"
 @dataclass(frozen=True)
@@ -169,8 +166,8 @@ def write_svg(
         for index, h in enumerate(h_values)
     }
     lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
-        f'height="{height}" viewBox="0 0 {width} {height}">',
+        (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+        f'height="{height}" viewBox="0 0 {width} {height}">'),
         '<rect width="100%" height="100%" fill="white"/>',
     ]
     for tick in ticks(x_lo, x_hi):
@@ -205,12 +202,12 @@ def write_svg(
         )
     lines.extend(
         [
-            f'<text x="{(left + right) / 2:.2f}" y="535" text-anchor="middle" '
-            'font-family="serif" font-size="15">normalized rho</text>',
-            f'<text x="24" y="{(top + bottom) / 2:.2f}" text-anchor="middle" '
+            (f'<text x="{(left + right) / 2:.2f}" y="535" text-anchor="middle" '
+            'font-family="serif" font-size="15">normalized rho</text>'),
+            (f'<text x="24" y="{(top + bottom) / 2:.2f}" text-anchor="middle" '
             'font-family="serif" font-size="15" '
             f'transform="rotate(-90 24 {(top + bottom) / 2:.2f})">'
-            "normalized solve time</text>",
+            "normalized solve time</text>"),
         ]
     )
     legend_x = right - 150

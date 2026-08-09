@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Reproduce the paper's theta-versus-AMG-levels diagnostic figure."""
 
 from __future__ import annotations
@@ -8,7 +7,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GROUP_COLUMNS = ["split", "pattern", "epsilon", "refinement", "h"]
@@ -191,7 +189,7 @@ def regression_by_test_case(data: Any, pd: Any) -> Any:
         records.append(
             {
                 **dict(zip(GROUP_COLUMNS, key)),
-                "n_points": int(len(points)),
+                "n_points": len(points),
                 "p_value": float(result.pvalues["theta"]),
                 "r_squared": float(result.rsquared),
                 "slope": float(result.params["theta"]),
@@ -374,7 +372,7 @@ def settings_report(
         )
 
     return {
-        "rows": int(len(data)),
+        "rows": len(data),
         "splits": sorted(data["split"].unique().tolist()),
         "patterns": sorted(data["pattern"].unique().tolist()),
         "epsilon_values": sorted(data["epsilon"].unique().tolist()),
@@ -382,7 +380,7 @@ def settings_report(
         "theta_values": sorted(data["theta"].unique().tolist()),
         "n_levels_min": int(data["n_levels"].min()),
         "n_levels_max": int(data["n_levels"].max()),
-        "regression_test_cases": int(len(regressions)),
+        "regression_test_cases": len(regressions),
         "warnings": warnings,
     }
 

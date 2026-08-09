@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -6,6 +5,7 @@ import glob
 import json
 import math
 from collections import defaultdict
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,7 @@ def main() -> None:
         if len(records) < 2:
             failures.append(f"{key}: fewer than two mesh sizes")
             continue
-        for coarse, fine in zip(records, records[1:]):
+        for coarse, fine in pairwise(records):
             l2_rate = rate(
                 float(coarse["l2_error"]),
                 float(fine["l2_error"]),

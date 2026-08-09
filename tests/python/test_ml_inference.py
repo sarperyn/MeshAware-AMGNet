@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
@@ -18,6 +17,7 @@ from meshaware_ml.amg_integration import (
 )
 from meshaware_ml.inference import RhoPredictor, parse_theta_values
 from meshaware_ml.training import train
+
 from tests.python.test_ml_pipeline import write_matrix_npz
 from tests.python.test_ml_training import (
     tiny_run_config,

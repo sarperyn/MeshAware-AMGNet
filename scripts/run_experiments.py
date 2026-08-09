@@ -1,56 +1,68 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterable
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from meshaware_data.reporting import build_family_reports
+from meshaware_data.artifacts import write_json_atomic
 from meshaware_data.csr_artifact import (
     convert_petsc_to_csr_npz,
     read_petsc_matrix_header,
     validate_csr_npz,
 )
+from meshaware_data.identifiers import matrix_id, sample_id
+from meshaware_data.reporting import build_family_reports
 from meshaware_data.schema import ExperimentConfig, load_experiment_config
+from meshaware_data.solver import (
+    EXECUTABLE_NAMES,
+    base_solver_command,
+    solver_environment,
+)
 
 
-EXECUTABLES = {
-    "quadrilateral": "meshaware_diffusion_dealii",
-    "simplex": "meshaware_diffusion_dealii",
-    "polygonal": "meshaware_diffusion_polydeal",
-}
-
-
-def slug_float(value: float) -> str:
-    return f"{value:.10g}".replace("-", "m").replace(".", "p")
-
-
-def matrix_id(trial: dict[str, Any], high_region: str) -> str:
-    family = {
-        "quadrilateral": "quad",
-        "simplex": "simplex",
-        "polygonal": "poly",
-    }[trial["mesh_family"]]
-    return (
-        f"{family}_l{trial['level']}_{trial['pattern']}_"
-        f"e{slug_float(trial['epsilon'])}_high_{high_region}"
+def matrix_id_for_trial(trial: dict[str, Any], high_region: str) -> str:
+    return matrix_id(
+        mesh_family=str(trial["mesh_family"]),
+        level=int(trial["level"]),
+        pattern=str(trial["pattern"]),
+        epsilon=float(trial["epsilon"]),
+        high_region=high_region,
     )
 
 
-def sample_id(trial: dict[str, Any], high_region: str) -> str:
-    return (
-        f"{matrix_id(trial, high_region)}_"
-        f"theta_{slug_float(trial['theta'])}_repeat_{trial['repeat']}"
+def sample_id_for_trial(trial: dict[str, Any], high_region: str) -> str:
+    return sample_id(
+        matrix_id_for_trial(trial, high_region),
+        theta=float(trial["theta"]),
+        repeat=int(trial["repeat"]),
     )
+
+
+def amg_command_options(config: ExperimentConfig, mesh_family: str) -> list[str]:
+    options = [
+        "--amg-smoother",
+        config.amg_smoother,
+        "--jacobi-damping",
+        str(config.jacobi_damping),
+    ]
+    if mesh_family == "polygonal":
+        options.extend(
+            [
+                "--amg-backend",
+                config.amg_backend,
+                "--boomeramg-profile",
+                config.boomeramg_profile,
+            ]
+        )
+    return options
 
 
 def command_for(
@@ -62,29 +74,20 @@ def command_for(
     write_matrix: bool,
 ) -> list[str]:
     command = [
-        str(executable),
-        "--mesh-family",
-        trial["mesh_family"],
-        "--level",
-        str(trial["level"]),
-        "--epsilon",
-        str(trial["epsilon"]),
-        "--pattern",
-        trial["pattern"],
-        "--high-region",
-        config.high_region,
+        *base_solver_command(
+            executable,
+            mesh_family=trial["mesh_family"],
+            level=trial["level"],
+            epsilon=trial["epsilon"],
+            pattern=trial["pattern"],
+            high_region=config.high_region,
+            relative_tolerance=config.relative_tolerance,
+            absolute_tolerance=config.absolute_tolerance,
+            maximum_iterations=config.maximum_iterations,
+        ),
         "--theta",
         str(trial["theta"]),
-        "--rtol",
-        str(config.relative_tolerance),
-        "--atol",
-        str(config.absolute_tolerance),
-        "--max-iterations",
-        str(config.maximum_iterations),
-        "--amg-smoother",
-        config.amg_smoother,
-        "--jacobi-damping",
-        str(config.jacobi_damping),
+        *amg_command_options(config, trial["mesh_family"]),
         "--repeat",
         str(trial["repeat"]),
         "--record",
@@ -92,15 +95,6 @@ def command_for(
         "--matrix",
         str(matrix_path),
     ]
-    if trial["mesh_family"] == "polygonal":
-        command.extend(
-            [
-                "--amg-backend",
-                config.amg_backend,
-                "--boomeramg-profile",
-                config.boomeramg_profile,
-            ]
-        )
     if not write_matrix:
         command.append("--skip-matrix-write")
     return command
@@ -111,7 +105,7 @@ def group_trials_by_matrix(
 ) -> list[tuple[str, list[dict[str, Any]]]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for trial in trials:
-        current_matrix_id = matrix_id(trial, high_region)
+        current_matrix_id = matrix_id_for_trial(trial, high_region)
         groups.setdefault(current_matrix_id, []).append(trial)
     return list(groups.items())
 
@@ -128,29 +122,20 @@ def command_for_batch(
     skip_existing_records: bool,
 ) -> list[str]:
     command = [
-        str(executable),
-        "--mesh-family",
-        representative["mesh_family"],
-        "--level",
-        str(representative["level"]),
-        "--epsilon",
-        str(representative["epsilon"]),
-        "--pattern",
-        representative["pattern"],
-        "--high-region",
-        config.high_region,
+        *base_solver_command(
+            executable,
+            mesh_family=representative["mesh_family"],
+            level=representative["level"],
+            epsilon=representative["epsilon"],
+            pattern=representative["pattern"],
+            high_region=config.high_region,
+            relative_tolerance=config.relative_tolerance,
+            absolute_tolerance=config.absolute_tolerance,
+            maximum_iterations=config.maximum_iterations,
+        ),
         "--theta-values",
         ",".join(str(theta) for theta in theta_values),
-        "--rtol",
-        str(config.relative_tolerance),
-        "--atol",
-        str(config.absolute_tolerance),
-        "--max-iterations",
-        str(config.maximum_iterations),
-        "--amg-smoother",
-        config.amg_smoother,
-        "--jacobi-damping",
-        str(config.jacobi_damping),
+        *amg_command_options(config, representative["mesh_family"]),
         "--repeats",
         str(repeats),
         "--warmup-runs",
@@ -160,15 +145,6 @@ def command_for_batch(
         "--matrix",
         str(matrix_path),
     ]
-    if representative["mesh_family"] == "polygonal":
-        command.extend(
-            [
-                "--amg-backend",
-                config.amg_backend,
-                "--boomeramg-profile",
-                config.boomeramg_profile,
-            ]
-        )
     if not write_matrix:
         command.append("--skip-matrix-write")
     if skip_existing_records:
@@ -176,14 +152,8 @@ def command_for_batch(
     return command
 
 
-def run_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    environment.setdefault("OMPI_MCA_btl", "self")
-    return environment
-
-
 def require_executable(build_dir: Path, family: str) -> Path:
-    executable = build_dir / EXECUTABLES[family]
+    executable = build_dir / EXECUTABLE_NAMES[family]
     if not executable.is_file():
         raise SystemExit(
             f"Missing executable {executable}. Configure/build with deal.II first."
@@ -197,14 +167,6 @@ def output_root_for_family(
     if config.family_subdirectories:
         return experiment_root / family
     return experiment_root
-
-
-def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(value, handle, indent=2)
-        handle.write("\n")
-    temporary.replace(path)
 
 
 def update_record_matrix_references(
@@ -311,13 +273,13 @@ def run_single_trials(
         family = trial["mesh_family"]
         executable = require_executable(args.build_dir, family)
         family_root = output_root_for_family(config, experiment_root, family)
-        current_matrix_id = matrix_id(trial, config.high_region)
+        current_matrix_id = matrix_id_for_trial(trial, config.high_region)
         matrix_path = family_root / "matrices" / f"{current_matrix_id}.petsc"
         npz_path = family_root / "matrices" / f"{current_matrix_id}.npz"
         record_path = (
             family_root
             / "records"
-            / f"{sample_id(trial, config.high_region)}.json"
+            / f"{sample_id_for_trial(trial, config.high_region)}.json"
         )
         if record_path.exists() and not args.overwrite_records:
             if config.save_matrix and config.matrix_format == "scipy_csr_npz":
@@ -354,8 +316,11 @@ def run_single_trials(
             matrix_path,
             write_matrix,
         )
-        print(f"[{index}/{len(trials)}] {sample_id(trial, config.high_region)}")
-        subprocess.run(command, check=True, env=run_environment())
+        print(
+            f"[{index}/{len(trials)}] "
+            f"{sample_id_for_trial(trial, config.high_region)}"
+        )
+        subprocess.run(command, check=True, env=solver_environment())
         if config.save_matrix and config.matrix_format == "scipy_csr_npz":
             finalize_npz_matrix(
                 matrix_path,
@@ -386,7 +351,8 @@ def run_matrix_batches(
         matrix_path = family_root / "matrices" / f"{current_matrix_id}.petsc"
         npz_path = family_root / "matrices" / f"{current_matrix_id}.npz"
         expected_records = [
-            record_directory / f"{sample_id(trial, config.high_region)}.json"
+            record_directory
+            / f"{sample_id_for_trial(trial, config.high_region)}.json"
             for trial in group
         ]
         existing_before = sum(path.exists() for path in expected_records)
@@ -439,7 +405,7 @@ def run_matrix_batches(
             f"trials={len(group)}",
             flush=True,
         )
-        subprocess.run(command, check=True, env=run_environment())
+        subprocess.run(command, check=True, env=solver_environment())
 
         existing_after = sum(path.exists() for path in expected_records)
         if existing_after != len(expected_records):
@@ -500,7 +466,7 @@ def main() -> None:
     args = parse_args()
     config = load_experiment_config(args.config)
     selected = set(args.mesh_family or config.mesh_families)
-    unavailable = sorted(selected.difference(EXECUTABLES))
+    unavailable = sorted(selected.difference(EXECUTABLE_NAMES))
     if unavailable:
         raise SystemExit(
             "Drivers not implemented yet for: "

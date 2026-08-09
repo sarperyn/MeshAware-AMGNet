@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import torch
+from meshaware_data.artifacts import file_sha256
 
-from .dataset import file_sha256, load_index_rows
+from .dataset import load_index_rows
 from .model import PaperRhoCNN
 from .pooling import PAPER_POOLING_SPEC, load_and_pool_csr_npz
 from .training import (
@@ -24,7 +24,6 @@ from .training import (
     seed_everything,
 )
 
-
 INFERENCE_SCHEMA_VERSION = 1
 SUPPORTED_MESH_FAMILIES = frozenset({"simplex", "polygonal"})
 
@@ -34,26 +33,6 @@ class PredictorPaths:
     training_config: Path
     checkpoint: Path
     phase3_summary: Path
-
-
-def write_json_atomic(path: str | Path, value: dict[str, Any]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        text=True,
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_name, path)
-    finally:
-        Path(temporary_name).unlink(missing_ok=True)
 
 
 def parse_theta_values(values: Iterable[float]) -> tuple[float, ...]:
@@ -108,7 +87,7 @@ class RhoPredictor:
         *,
         repo_root: str | Path,
         device: str | None = None,
-    ) -> "RhoPredictor":
+    ) -> RhoPredictor:
         run = load_run_config(paths.training_config, repo_root=repo_root)
         return cls(
             run,

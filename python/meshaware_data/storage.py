@@ -8,7 +8,6 @@ from typing import Any
 
 from .schema import ExperimentConfig
 
-
 PETSC_INDEX_BYTES = 4
 SCALAR_BYTES = 8
 ESTIMATED_RECORD_BYTES = 1536

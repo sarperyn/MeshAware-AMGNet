@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from meshaware_data.artifacts import file_sha256, write_json_atomic
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -25,11 +26,8 @@ from .dataset import (
     MatrixViewCache,
     assert_disjoint_hashes,
     collate_matrix_groups,
-    file_sha256,
 )
-from .inventory import write_json_atomic
 from .model import PaperCNNConfig, PaperRhoCNN
-
 
 TRAINING_SCHEMA_VERSION = 1
 CHECKPOINT_SCHEMA_VERSION = 1
@@ -529,8 +527,8 @@ def _report_markdown(summary: dict[str, Any], config: RunConfig) -> str:
         f"- Epoch history: `{summary['artifacts']['history_csv']}`",
         f"- Machine-readable summary: `{summary['artifacts']['summary_json']}`",
         "",
-        "Phase 4 may load `best.pt` once to evaluate the untouched test split, "
-        "including per-family and error-distribution analyses.",
+        ("Phase 4 may load `best.pt` once to evaluate the untouched test split, "
+        "including per-family and error-distribution analyses."),
         "",
     ]
     return "\n".join(lines)

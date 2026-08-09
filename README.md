@@ -482,7 +482,7 @@ checked and reused when a run is restarted.
 Generate all report families for the small dataset:
 
 ```bash
-PYTHON=python bash scripts/run_figure_pipeline.sh \
+bash scripts/run_figure_pipeline.sh \
   --dataset-root datasets/small \
   --output-root results/figures/small
 ```

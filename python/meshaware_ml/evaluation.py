@@ -8,13 +8,15 @@ import os
 import shutil
 import tempfile
 from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 import torch
+from meshaware_data.artifacts import file_sha256, write_json_atomic
 from torch.utils.data import DataLoader
 
 from .dataset import (
@@ -22,10 +24,8 @@ from .dataset import (
     HashGroupBatchSampler,
     MatrixViewCache,
     collate_matrix_groups,
-    file_sha256,
     load_index_rows,
 )
-from .inventory import write_json_atomic
 from .model import PaperRhoCNN
 from .training import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -34,7 +34,6 @@ from .training import (
     resolve_device,
     seed_everything,
 )
-
 
 EVALUATION_SCHEMA_VERSION = 1
 LOCK_SCHEMA_VERSION = 1
@@ -235,10 +234,10 @@ def grouped_bootstrap_intervals(
             for row in groups[group_names[int(index)]]
         ]
         metrics = regression_metrics(sample)
-        for metric in values:
+        for metric, metric_values in values.items():
             value = metrics[metric]
             if value is not None:
-                values[metric].append(float(value))
+                metric_values.append(float(value))
     alpha = (1.0 - confidence_level) / 2.0
     intervals: dict[str, Any] = {}
     for metric, samples in values.items():
@@ -800,9 +799,9 @@ def _report_markdown(
                 "model selection."
             ),
             "",
-            "Detailed predictions, stratified metrics, bootstrap settings, "
+            ("Detailed predictions, stratified metrics, bootstrap settings, "
             "worst cases, and per-matrix theta decisions are stored under "
-            f"`{config.output_dir}`.",
+            f"`{config.output_dir}`."),
             "",
         ]
     )
