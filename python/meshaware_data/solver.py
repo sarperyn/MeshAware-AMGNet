@@ -6,6 +6,7 @@ from pathlib import Path
 EXECUTABLE_NAMES = {
     "quadrilateral": "meshaware_diffusion_dealii",
     "simplex": "meshaware_diffusion_dealii",
+    "simplex-dg": "meshaware_diffusion_simplex_dg",
     "polygonal": "meshaware_diffusion_polydeal",
 }
 

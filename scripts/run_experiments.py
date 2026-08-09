@@ -444,7 +444,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mesh-family",
         action="append",
-        choices=("quadrilateral", "simplex", "polygonal"),
+        choices=("quadrilateral", "simplex", "simplex-dg", "polygonal"),
         help="Restrict execution; repeat this option to select multiple families.",
     )
     parser.add_argument("--dry-run", action="store_true")

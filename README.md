@@ -20,10 +20,11 @@ The model problem is
 \]
 
 The repository covers four coefficient patterns, twelve coefficient contrasts,
-multiple refinement levels, and three mesh families:
+multiple refinement levels, and four mesh families:
 
 - Quadrilateral Q1 elements.
 - Simplex P1 elements.
+- Simplex P1 symmetric interior-penalty discontinuous Galerkin elements.
 - Polygonal symmetric interior-penalty discontinuous Galerkin elements.
 
 The C++ solvers assemble finite-element operators and run conjugate gradient
@@ -36,8 +37,8 @@ model-selected BoomerAMG parameters.
 
 ## Scientific scope
 
-The quadrilateral and simplex implementations in [src/dealii/](src/dealii/)
-use [deal.II](https://dealii.org/). The polygonal implementation in
+The quadrilateral, conforming simplex, and simplex DG implementations in
+[src/dealii/](src/dealii/) use [deal.II](https://dealii.org/). The polygonal implementation in
 [src/polydeal/](src/polydeal/) uses
 [PolyDeal](https://github.com/fdrmrc/Polydeal) and a symmetric interior-penalty
 discontinuous Galerkin formulation.
@@ -272,7 +273,8 @@ python -m unittest discover -s tests/python -v
 ```
 
 The build should produce `meshaware_diffusion_dealii` for quadrilateral and
-simplex problems and `meshaware_diffusion_polydeal` for polygonal problems.
+conforming simplex problems, `meshaware_diffusion_simplex_dg` for simplex
+SIPG problems, and `meshaware_diffusion_polydeal` for polygonal problems.
 If only deal.II is available, disable the polygonal driver with
 `-DMESHAWARE_BUILD_POLYDEAL=OFF`.
 
@@ -338,7 +340,45 @@ Chebyshev by default. Set
 configuration. `theta` is retained in records for schema compatibility but is
 not used by this backend.
 
-### 3. Run a cross-family smoke experiment
+### 3. Run the standalone simplex-DG experiment
+
+The simplex-DG driver uses the same interface-aligned triangular mesh as the
+conforming simplex experiment, but assigns three discontinuous P1 unknowns to
+each triangle. It uses the polygonal experiment's symmetric interior-penalty
+flux convention and coefficient-scaled penalty while retaining PETSc CG and
+default HYPRE BoomerAMG.
+
+Build and run its isolated smoke and convergence configurations with:
+
+```bash
+cmake -S . -B build-unified
+cmake --build build-unified --target meshaware_diffusion_simplex_dg --parallel
+ctest --test-dir build-unified -R dealii_simplex_dg --output-on-failure
+
+./scripts/run_simplex_dg_experiment.sh smoke
+./scripts/run_simplex_dg_experiment.sh convergence
+"$AMG_PYTHON" scripts/check_convergence.py \
+  --records-glob 'datasets/simplex-dg-convergence/records/*.json'
+```
+
+Inspect storage and the expanded full grid before running the medium sweep:
+
+```bash
+./scripts/run_simplex_dg_experiment.sh medium --dry-run
+"$AMG_PYTHON" scripts/storage_preflight.py \
+  --config configs/medium_simplex_dg.json \
+  --json-output results/medium_simplex_dg_storage_preflight.json \
+  --enforce-free-space
+./scripts/run_simplex_dg_experiment.sh medium
+```
+
+The medium configuration contains 192 matrices and 1,920 retained trials.
+Level 10 alone has 8,388,608 triangles and 25,165,824 DG unknowns, so it
+should only be attempted after the storage and memory preflight succeeds.
+The launcher requires `AMG_PYTHON`; `MESHAWARE_BUILD_DIR` and
+`MESHAWARE_OUTPUT_ROOT` may override its default build and output locations.
+
+### 4. Run a cross-family smoke experiment
 
 The [batch smoke configuration](configs/batch_smoke.json) exercises all three
 mesh families, two threshold values, repeated solves, matrix conversion, and
@@ -355,7 +395,7 @@ Results are written under `datasets/batch_smoke/`. Rerunning the command skips
 complete records and resumes incomplete matrix batches. Use
 `--overwrite-records` only when the existing measurements should be replaced.
 
-### 4. Check numerical convergence
+### 5. Check numerical convergence
 
 Run the conforming Q1/P1 convergence study and its rate check:
 
@@ -421,7 +461,7 @@ The second command reproduces the checked-in
 `datasets/medium/polygonal-chebyshev/` layout because that single-family
 configuration intentionally uses a flat output directory.
 
-### 5. Estimate storage and inspect an experiment
+### 6. Estimate storage and inspect an experiment
 
 The [small](configs/small.json), [medium](configs/medium.json), and
 [large](configs/large.json) configurations increase mesh coverage, threshold
@@ -454,7 +494,7 @@ These cross-family tiers inherit `boomeramg_profile: default` from
 scalar-BoomerAMG baseline. Use the dedicated nodal configuration above when a
 block-aware polygonal BoomerAMG sweep is intended.
 
-### 6. Generate a numerical dataset
+### 7. Generate a numerical dataset
 
 The small tier is the practical starting point:
 
@@ -477,7 +517,7 @@ The matrix is assembled once for each physical problem. Every threshold and
 repeat still receives a fresh AMG hierarchy. Existing valid artifacts are
 checked and reused when a run is restarted.
 
-### 7. Generate tables and figures
+### 8. Generate tables and figures
 
 Generate all report families for the small dataset:
 
@@ -495,7 +535,7 @@ family under `results/figures/small/`.
 If LaTeX or PGFPlots is unavailable, add `--no-pdf`. The CSV, PNG, and SVG
 outputs do not require the TeX backend.
 
-### 8. Build the ANN dataset
+### 9. Build the ANN dataset
 
 Finish or stop numerical generation before freezing an ML snapshot. The
 current model is trained only on simplex and polygonal default-BoomerAMG
@@ -525,7 +565,7 @@ version. Reruns reuse features identified by their source checksum and retain
 existing train, validation, and test assignments. Use `--reset-splits` only
 when intentionally creating a new split version.
 
-### 9. Train the convergence-factor model
+### 10. Train the convergence-factor model
 
 The [baseline training configuration](configs/ml_cnn_baseline.json) reads the
 canonical training and validation partitions and writes checkpoints under
@@ -549,7 +589,7 @@ python scripts/train_rho_cnn.py \
 Use `--epoch-limit 1` for a short pipeline check before committing compute time
 to a complete run.
 
-### 10. Evaluate the selected checkpoint
+### 11. Evaluate the selected checkpoint
 
 After model selection is complete, run the locked held-out evaluation:
 
@@ -563,7 +603,7 @@ confidence intervals, threshold-selection regret, plots, and an artifact lock
 under `results/cnn_paper_v1/test_v1/`. A later invocation verifies and reuses
 the lock instead of evaluating the test set again.
 
-### 11. Recommend a threshold for an existing matrix
+### 12. Recommend a threshold for an existing matrix
 
 Use a finalized simplex or polygonal CSR NPZ matrix and provide the candidate
 threshold grid:
@@ -580,7 +620,7 @@ their deterministic ranking, the recommended threshold, and model and matrix
 provenance. The model does not support quadrilateral matrices because they are
 outside its training scope.
 
-### 12. Run BoomerAMG with the model-selected threshold
+### 13. Run BoomerAMG with the model-selected threshold
 
 The complete inference workflow assembles a new operator, converts it to the
 model representation, selects a candidate threshold, runs PETSc/HYPRE, and

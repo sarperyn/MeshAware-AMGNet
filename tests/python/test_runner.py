@@ -16,6 +16,7 @@ run_experiments = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(run_experiments)
 
 from meshaware_data.schema import load_experiment_config
+from meshaware_data.solver import EXECUTABLE_NAMES
 
 
 class BatchRunnerTests(unittest.TestCase):
@@ -121,6 +122,28 @@ class BatchRunnerTests(unittest.TestCase):
             ),
             experiment_root,
         )
+
+    def test_simplex_dg_uses_standalone_driver(self) -> None:
+        config = load_experiment_config(
+            REPO_ROOT / "configs" / "simplex_dg_smoke.json"
+        )
+        trial = next(config.iter_trials())
+        command = run_experiments.command_for(
+            Path("meshaware_diffusion_simplex_dg"),
+            config,
+            trial,
+            Path("record.json"),
+            Path("matrix.petsc"),
+            write_matrix=False,
+        )
+        self.assertEqual(
+            EXECUTABLE_NAMES["simplex-dg"],
+            "meshaware_diffusion_simplex_dg",
+        )
+        self.assertEqual(
+            command[command.index("--mesh-family") + 1], "simplex-dg"
+        )
+        self.assertNotIn("--amg-backend", command)
 
 
 if __name__ == "__main__":

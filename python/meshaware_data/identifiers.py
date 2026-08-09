@@ -3,6 +3,7 @@ from __future__ import annotations
 MATRIX_PREFIXES = {
     "quadrilateral": "quad",
     "simplex": "simplex",
+    "simplex-dg": "simplex_dg",
     "polygonal": "poly",
 }
 

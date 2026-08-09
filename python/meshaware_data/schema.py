@@ -13,7 +13,7 @@ PATTERNS = (
     "vertical_stripes_4",
     "checkerboard_4x4",
 )
-MESH_FAMILIES = ("quadrilateral", "simplex", "polygonal")
+MESH_FAMILIES = ("quadrilateral", "simplex", "simplex-dg", "polygonal")
 AMG_BACKENDS = ("boomeramg", "polydeal-agglomeration")
 BOOMERAMG_PROFILES = ("default", "polygonal-nodal")
 AMG_SMOOTHERS = (

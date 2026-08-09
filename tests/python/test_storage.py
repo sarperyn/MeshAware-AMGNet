@@ -38,6 +38,20 @@ class StorageEstimateTests(unittest.TestCase):
             any("100,000 files" in warning for warning in report["warnings"])
         )
 
+    def test_simplex_dg_size_model(self) -> None:
+        report = estimate_experiment_storage(self.load("medium_simplex_dg"))
+        self.assertEqual(report["totals"]["matrices"], 192)
+        self.assertEqual(report["totals"]["trial_records"], 1920)
+        level_10 = next(
+            row for row in report["breakdown"] if row["level"] == 10
+        )
+        self.assertEqual(level_10["cells"], 8_388_608)
+        self.assertEqual(level_10["dofs_per_matrix"], 25_165_824)
+        self.assertEqual(
+            level_10["model"],
+            "structured_p1_sipg_conservative_12_entries_per_dof",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -85,6 +85,18 @@ class ExperimentConfigTests(unittest.TestCase):
         self.assertEqual(smoke.trial_count, 1)
         self.assertEqual(convergence.levels, (4, 5, 6))
 
+    def test_simplex_dg_configs_are_isolated(self) -> None:
+        smoke = self.load("simplex_dg_smoke")
+        convergence = self.load("simplex_dg_convergence")
+        medium = self.load("medium_simplex_dg")
+        self.assertEqual(smoke.mesh_families, ("simplex-dg",))
+        self.assertEqual(smoke.trial_count, 1)
+        self.assertFalse(smoke.family_subdirectories)
+        self.assertEqual(convergence.levels, (2, 3, 4))
+        self.assertEqual(medium.levels, (3, 5, 8, 10))
+        self.assertEqual(medium.trial_count, 1920)
+        self.assertEqual(medium.amg_backend, "boomeramg")
+
     def test_flat_output_requires_one_mesh_family(self) -> None:
         config = self.load("medium_polygonal_chebyshev")
         self.assertFalse(config.family_subdirectories)

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "simplex-dg-smoke",
+  "mesh_families": ["simplex-dg"],
+  "levels": [1],
+  "patterns": ["vertical_split"],
+  "epsilons": [0.0],
+  "theta_values": [0.24],
+  "repeats": 1,
+  "family_subdirectories": false
+}
