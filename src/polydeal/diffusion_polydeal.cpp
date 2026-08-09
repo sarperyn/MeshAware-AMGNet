@@ -18,19 +18,33 @@
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
+#include <deal.II/lac/la_parallel_vector.h>
 #include <deal.II/lac/petsc_sparse_matrix.h>
 #include <deal.II/lac/petsc_vector.h>
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/sparse_direct.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_pattern.h>
+#include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_vector.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/vector_operation.h>
+
+#include <deal.II/multigrid/mg_matrix.h>
+#include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/multigrid.h>
 
 #include <deal.II/numerics/vector_tools.h>
 
 #include <agglomeration_handler.h>
 #include <fe_agglodgp.h>
+#include <multigrid_amg.h>
 #include <poly_utils.h>
+#include <utils.h>
 
 #include <algorithm>
 #include <array>
@@ -77,6 +91,9 @@ struct Options {
   double relative_tolerance = 1e-8;
   double absolute_tolerance = 1e-50;
   unsigned int maximum_iterations = 10000;
+  meshaware::AmgBackend amg_backend = meshaware::AmgBackend::boomeramg;
+  meshaware::BoomerAmgProfile boomeramg_profile =
+      meshaware::BoomerAmgProfile::default_options;
   meshaware::AmgSmoother amg_smoother =
       meshaware::AmgSmoother::symmetric_gauss_seidel;
   double jacobi_damping = 2.0 / 3.0;
@@ -140,6 +157,12 @@ Options parse_options(const int argc, char **argv) {
       options.absolute_tolerance = std::stod(require_value(i, argc, argv));
     else if (argument == "--max-iterations")
       options.maximum_iterations = std::stoul(require_value(i, argc, argv));
+    else if (argument == "--amg-backend")
+      options.amg_backend =
+          meshaware::parse_amg_backend(require_value(i, argc, argv));
+    else if (argument == "--boomeramg-profile")
+      options.boomeramg_profile =
+          meshaware::parse_boomeramg_profile(require_value(i, argc, argv));
     else if (argument == "--amg-smoother")
       options.amg_smoother =
           meshaware::parse_amg_smoother(require_value(i, argc, argv));
@@ -173,11 +196,15 @@ Options parse_options(const int argc, char **argv) {
           << "  --pattern NAME  manufactured-solution pattern\n"
           << "  --epsilon E     coefficient contrast = 10^E\n"
           << "  --high-region NAME  white or gray\n"
-          << "  --theta T       BoomerAMG strong threshold\n"
+          << "  --theta T       BoomerAMG strong threshold; recorded but "
+             "unused by PolyDeal MG\n"
           << "  --theta-values CSV  batched strong-threshold grid\n"
           << "  --rtol T --atol T --max-iterations N\n"
-          << "  --amg-smoother NAME chebyshev, damped-jacobi, or "
-             "symmetric-gauss-seidel\n"
+          << "  --amg-backend NAME boomeramg or "
+             "polydeal-agglomeration\n"
+          << "  --boomeramg-profile NAME default or polygonal-nodal\n"
+          << "  --amg-smoother NAME chebyshev, damped-jacobi, "
+             "l1-symmetric-gauss-seidel, or symmetric-gauss-seidel\n"
           << "  --jacobi-damping W  damping in (0,1], default 2/3\n"
           << "  --repeat N      timing repeat identifier\n"
           << "  --repeats N     repeats per theta in batch mode\n"
@@ -211,6 +238,31 @@ Options parse_options(const int argc, char **argv) {
     throw std::invalid_argument("jacobi-damping must lie in (0,1]");
   if (options.repeats == 0)
     throw std::invalid_argument("repeats must be positive");
+  if (options.amg_backend ==
+          meshaware::AmgBackend::polydeal_agglomeration &&
+      options.theta_values.size() != 1)
+    throw std::invalid_argument(
+        "polydeal-agglomeration accepts one theta value because it does not "
+        "use a strength threshold");
+  if (options.amg_backend ==
+          meshaware::AmgBackend::polydeal_agglomeration &&
+      options.boomeramg_profile !=
+          meshaware::BoomerAmgProfile::default_options)
+    throw std::invalid_argument(
+        "BoomerAMG tuning profiles require the boomeramg backend");
+  if (options.amg_backend ==
+          meshaware::AmgBackend::polydeal_agglomeration &&
+      options.amg_smoother ==
+          meshaware::AmgSmoother::l1_symmetric_gauss_seidel)
+    throw std::invalid_argument(
+        "l1-symmetric-gauss-seidel is available only for BoomerAMG");
+  if (options.boomeramg_profile ==
+          meshaware::BoomerAmgProfile::polygonal_nodal &&
+      options.amg_smoother ==
+          meshaware::AmgSmoother::l1_symmetric_gauss_seidel)
+    throw std::invalid_argument(
+        "polygonal-nodal is incompatible with HYPRE's "
+        "l1-symmetric-gauss-seidel relaxation");
   if (!options.record_directory.empty() && !options.record_path.empty())
     throw std::invalid_argument("record and record-dir are mutually exclusive");
   if (options.record_directory.empty() && options.theta_values.size() != 1)
@@ -263,6 +315,119 @@ struct ErrorNorms {
   double energy = 0.0;
 };
 
+using BackgroundCell = Triangulation<2>::active_cell_iterator;
+
+struct AgglomerateGroup {
+  std::vector<BackgroundCell> cells;
+  std::vector<unsigned int> children;
+  unsigned int tile_x = 0;
+  unsigned int tile_y = 0;
+  unsigned int grid_x = 0;
+  unsigned int grid_y = 0;
+};
+
+void fill_nested_injection_matrix(
+    const AgglomerationHandler<2> &coarse_handler,
+    const AgglomerationHandler<2> &fine_handler,
+    const std::vector<std::vector<unsigned int>> &children_by_parent,
+    TrilinosWrappers::SparseMatrix &injection) {
+  if (coarse_handler.n_dofs() >= fine_handler.n_dofs())
+    throw std::runtime_error(
+        "agglomeration hierarchy does not reduce the number of DoFs");
+  if (children_by_parent.size() != coarse_handler.n_agglomerates())
+    throw std::runtime_error("invalid parent-child map for polygon hierarchy");
+
+  const auto &coarse_dof_handler = coarse_handler.agglo_dh;
+  const auto &fine_dof_handler = fine_handler.agglo_dh;
+  const auto &finite_element = coarse_handler.get_fe();
+  const auto &fine_bboxes = fine_handler.get_local_bboxes();
+  const auto &coarse_bboxes = coarse_handler.get_local_bboxes();
+  const MPI_Comm communicator = coarse_dof_handler.get_mpi_communicator();
+
+  TrilinosWrappers::SparsityPattern sparsity(
+      fine_dof_handler.locally_owned_dofs(),
+      coarse_dof_handler.locally_owned_dofs(), communicator);
+  const unsigned int dofs_per_cell = finite_element.dofs_per_cell;
+  std::vector<types::global_dof_index> coarse_dof_indices(dofs_per_cell);
+  std::vector<types::global_dof_index> fine_dof_indices(dofs_per_cell);
+
+  for (const auto &coarse_polytope : coarse_handler.polytope_iterators()) {
+    coarse_polytope->get_dof_indices(coarse_dof_indices);
+    const auto &children = children_by_parent.at(coarse_polytope->index());
+    if (children.empty())
+      throw std::runtime_error("coarse polygon has no fine children");
+    for (const unsigned int child_index : children) {
+      const auto &child =
+          fine_handler.polytope_to_dh_iterator(child_index);
+      child->get_dof_indices(fine_dof_indices);
+      for (const auto row : fine_dof_indices)
+        sparsity.add_entries(row, coarse_dof_indices.begin(),
+                             coarse_dof_indices.end());
+    }
+  }
+
+  sparsity.compress();
+  injection.reinit(sparsity);
+
+  // FE_AggloDGP is modal and has no support points. Recover the exact
+  // polynomial restriction by evaluating both bases at an unisolvent set.
+  std::vector<Point<2>> interpolation_points;
+  const unsigned int degree = finite_element.degree;
+  if (degree == 0) {
+    interpolation_points.emplace_back(0.5, 0.5);
+  } else {
+    for (unsigned int i = 0; i <= degree; ++i)
+      for (unsigned int j = 0; j + i <= degree; ++j)
+        interpolation_points.emplace_back(
+            static_cast<double>(i) / degree,
+            static_cast<double>(j) / degree);
+  }
+  if (interpolation_points.size() != dofs_per_cell)
+    throw std::runtime_error(
+        "cannot construct an unisolvent PolyDeal transfer basis");
+
+  FullMatrix<double> fine_vandermonde(dofs_per_cell, dofs_per_cell);
+  for (unsigned int i = 0; i < dofs_per_cell; ++i)
+    for (unsigned int j = 0; j < dofs_per_cell; ++j)
+      fine_vandermonde(i, j) =
+          finite_element.shape_value(j, interpolation_points[i]);
+  FullMatrix<double> inverse_fine_vandermonde(dofs_per_cell, dofs_per_cell);
+  inverse_fine_vandermonde.invert(fine_vandermonde);
+
+  FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
+  FullMatrix<double> coarse_values(dofs_per_cell, dofs_per_cell);
+  AffineConstraints<double> no_constraints;
+  no_constraints.close();
+  for (const auto &coarse_polytope : coarse_handler.polytope_iterators()) {
+    coarse_polytope->get_dof_indices(coarse_dof_indices);
+    const BoundingBox<2> &coarse_bbox =
+        coarse_bboxes.at(coarse_polytope->index());
+
+    for (const unsigned int child_index :
+         children_by_parent.at(coarse_polytope->index())) {
+      const BoundingBox<2> &fine_bbox = fine_bboxes.at(child_index);
+      const auto &child =
+          fine_handler.polytope_to_dh_iterator(child_index);
+      child->get_dof_indices(fine_dof_indices);
+      coarse_values = 0.0;
+
+      for (unsigned int i = 0; i < dofs_per_cell; ++i) {
+        const Point<2> real_point =
+            fine_bbox.unit_to_real(interpolation_points[i]);
+        const Point<2> coarse_point = coarse_bbox.real_to_unit(real_point);
+        for (unsigned int j = 0; j < dofs_per_cell; ++j)
+          coarse_values(i, j) =
+              finite_element.shape_value(j, coarse_point);
+      }
+      inverse_fine_vandermonde.mmult(local_matrix, coarse_values);
+
+      no_constraints.distribute_local_to_global(
+          local_matrix, fine_dof_indices, coarse_dof_indices, injection);
+    }
+  }
+  injection.compress(VectorOperation::add);
+}
+
 class PolyDealExperiment {
 public:
   explicit PolyDealExperiment(const Options &options)
@@ -277,6 +442,10 @@ public:
     const auto assembly_start = Clock::now();
     assemble_system();
     const double assembly_seconds = seconds_since(assembly_start);
+
+    if (options.boomeramg_profile ==
+        meshaware::BoomerAmgProfile::polygonal_nodal)
+      prepare_polygonal_nodal_boomeramg();
 
     const std::uint64_t nonzeros = matrix_nonzeros();
     if (!options.matrix_path.empty() && !options.skip_matrix_write)
@@ -305,7 +474,7 @@ public:
     }
 
     const double theta = options.theta_values.front();
-    const meshaware::SolverMetrics solver_metrics = solve_petsc(theta);
+    const meshaware::SolverMetrics solver_metrics = solve_system(theta);
     const double solution_defect =
         options.oracle ? solution_equivalence_defect() : 0.0;
     const ErrorNorms errors = compute_errors(petsc_solution_native);
@@ -319,12 +488,18 @@ public:
               << " matrix_defect=" << matrix_defect
               << " rhs_defect=" << rhs_defect
               << " solution_defect=" << solution_defect
-              << " smoother=" << meshaware::to_string(options.amg_smoother)
+              << " backend=" << meshaware::to_string(options.amg_backend)
+              << " boomeramg_profile="
+              << meshaware::to_string(options.boomeramg_profile)
+              << " smoother=" << active_smoother_name()
               << " cg_iterations=" << solver_metrics.iterations
               << " amg_levels=" << solver_metrics.amg_levels
               << " rho=" << solver_metrics.convergence_factor
               << " setup_s=" << solver_metrics.setup_seconds
               << " solve_s=" << solver_metrics.solve_seconds
+              << " grid_complexity=" << solver_metrics.grid_complexity
+              << " operator_complexity="
+              << solver_metrics.operator_complexity
               << " l2_error=" << errors.l2
               << " broken_h1_error=" << errors.broken_h1
               << " energy_error=" << errors.energy << '\n';
@@ -348,6 +523,10 @@ public:
   }
 
 private:
+  const char *active_smoother_name() const {
+    return meshaware::to_string(options.amg_smoother);
+  }
+
   void run_batch(const double assembly_seconds, const std::uint64_t nonzeros) {
     unsigned int completed = 0;
     unsigned int skipped = 0;
@@ -365,10 +544,10 @@ private:
         continue;
 
       for (unsigned int warmup = 0; warmup < options.warmup_runs; ++warmup)
-        (void)solve_petsc(theta);
+        (void)solve_system(theta);
 
       for (const unsigned int repeat : pending_repeats) {
-        const meshaware::SolverMetrics solver_metrics = solve_petsc(theta);
+        const meshaware::SolverMetrics solver_metrics = solve_system(theta);
         const ErrorNorms errors = compute_errors(petsc_solution_native);
         write_record(theta, repeat, batch_record_path(theta, repeat),
                      assembly_seconds, solver_metrics, errors, nonzeros);
@@ -376,13 +555,18 @@ private:
                   << " polygons=" << agglomeration_handler->n_agglomerates()
                   << " dofs=" << agglomeration_handler->n_dofs()
                   << " theta=" << theta << " repeat=" << repeat
-                  << " smoother="
-                  << meshaware::to_string(options.amg_smoother)
+                  << " backend=" << meshaware::to_string(options.amg_backend)
+                  << " boomeramg_profile="
+                  << meshaware::to_string(options.boomeramg_profile)
+                  << " smoother=" << active_smoother_name()
                   << " iterations=" << solver_metrics.iterations
                   << " amg_levels=" << solver_metrics.amg_levels
                   << " rho=" << solver_metrics.convergence_factor
                   << " setup_s=" << solver_metrics.setup_seconds
-                  << " solve_s=" << solver_metrics.solve_seconds << '\n';
+                  << " solve_s=" << solver_metrics.solve_seconds
+                  << " grid_complexity=" << solver_metrics.grid_complexity
+                  << " operator_complexity="
+                  << solver_metrics.operator_complexity << '\n';
         ++completed;
       }
     }
@@ -398,17 +582,14 @@ private:
 
     cached_triangulation =
         std::make_unique<GridTools::Cache<2>>(triangulation, mapping);
-    agglomeration_handler =
-        std::make_unique<AgglomerationHandler<2>>(*cached_triangulation);
-
-    define_tile_constrained_agglomerates(subdivisions);
+    build_tile_constrained_hierarchy(subdivisions);
   }
 
-  void define_tile_constrained_agglomerates(const unsigned int subdivisions) {
-    using CellIterator = Triangulation<2>::active_cell_iterator;
+  void
+  build_tile_constrained_hierarchy(const unsigned int subdivisions) {
     using AgglomerateKey = std::tuple<unsigned int, unsigned int, unsigned int,
                                       unsigned int, unsigned int>;
-    std::map<AgglomerateKey, std::vector<CellIterator>> groups;
+    std::map<AgglomerateKey, std::vector<BackgroundCell>> fine_cells;
 
     // Use the common finest interface layout for every pattern. This keeps
     // polygon geometry and DoF ordering independent of the coefficient
@@ -444,20 +625,98 @@ private:
       // resolutions remain connected and never cross a coefficient tile.
       const bool first_polyomino =
           (offset_x == 0 && offset_y == 0) || (offset_x == 1 && offset_y <= 2);
-      groups[{tile_x, tile_y, block_x, block_y, first_polyomino ? 0u : 1u}]
+      fine_cells[{tile_x, tile_y, block_x, block_y,
+                  first_polyomino ? 0u : 1u}]
           .push_back(cell);
     }
 
-    for (const auto &[key, cells] : groups) {
-      (void)key;
+    std::vector<std::vector<AgglomerateGroup>> partitions_fine_to_coarse(1);
+    auto &finest_partition = partitions_fine_to_coarse.front();
+    finest_partition.reserve(fine_cells.size());
+    for (const auto &[key, cells] : fine_cells) {
       if (cells.empty())
         throw std::runtime_error("constructed an empty agglomerate");
-      agglomeration_handler->define_agglomerate(cells);
+      const auto [tile_x, tile_y, block_x, block_y, fine_part] = key;
+      (void)fine_part;
+      finest_partition.push_back(
+          {cells, {}, tile_x, tile_y, block_x, block_y});
     }
+
+    bool merge_fine_parts = true;
+    while (partitions_fine_to_coarse.back().size() > 16) {
+      const auto &children = partitions_fine_to_coarse.back();
+      using ParentKey =
+          std::tuple<unsigned int, unsigned int, unsigned int, unsigned int>;
+      std::map<ParentKey, AgglomerateGroup> parents;
+
+      for (unsigned int child_index = 0; child_index < children.size();
+           ++child_index) {
+        const auto &child = children[child_index];
+        const unsigned int parent_x =
+            merge_fine_parts ? child.grid_x : child.grid_x / 2;
+        const unsigned int parent_y =
+            merge_fine_parts ? child.grid_y : child.grid_y / 2;
+        auto &parent =
+            parents[{child.tile_x, child.tile_y, parent_x, parent_y}];
+        parent.tile_x = child.tile_x;
+        parent.tile_y = child.tile_y;
+        parent.grid_x = parent_x;
+        parent.grid_y = parent_y;
+        parent.cells.insert(parent.cells.end(), child.cells.begin(),
+                            child.cells.end());
+        parent.children.push_back(child_index);
+      }
+
+      std::vector<AgglomerateGroup> next_partition;
+      next_partition.reserve(parents.size());
+      for (auto &[key, parent] : parents) {
+        (void)key;
+        next_partition.push_back(std::move(parent));
+      }
+      if (next_partition.size() >= children.size())
+        break;
+      partitions_fine_to_coarse.push_back(std::move(next_partition));
+      merge_fine_parts = false;
+    }
+
+    mg_agglomeration_handlers.clear();
+    mg_level_children.clear();
+    mg_agglomeration_handlers.reserve(partitions_fine_to_coarse.size());
+    if (partitions_fine_to_coarse.size() > 1)
+      mg_level_children.resize(partitions_fine_to_coarse.size() - 1);
+
+    for (unsigned int level = 0; level < partitions_fine_to_coarse.size();
+         ++level) {
+      const unsigned int partition_index =
+          partitions_fine_to_coarse.size() - 1 - level;
+      auto handler =
+          std::make_unique<AgglomerationHandler<2>>(*cached_triangulation);
+      const auto &partition = partitions_fine_to_coarse[partition_index];
+      for (const auto &group : partition)
+        handler->define_agglomerate(group.cells);
+      mg_agglomeration_handlers.push_back(std::move(handler));
+
+      if (level + 1 < partitions_fine_to_coarse.size()) {
+        auto &level_children = mg_level_children[level];
+        level_children.reserve(partition.size());
+        for (const auto &group : partition)
+          level_children.push_back(group.children);
+      }
+    }
+
+    agglomeration_handler = mg_agglomeration_handlers.back().get();
   }
 
   void setup_system() {
-    agglomeration_handler->distribute_agglomerated_dofs(finite_element);
+    if (options.amg_backend == meshaware::AmgBackend::polydeal_agglomeration &&
+        mg_agglomeration_handlers.size() < 2)
+      throw std::runtime_error(
+          "polydeal-agglomeration requires at least two polygon levels; "
+          "use --level 2 or finer");
+
+    for (auto &handler : mg_agglomeration_handlers)
+      handler->distribute_agglomerated_dofs(finite_element);
+
     agglomeration_handler->create_agglomeration_sparsity_pattern(
         dynamic_sparsity);
     sparsity.copy_from(dynamic_sparsity);
@@ -474,6 +733,20 @@ private:
                           agglomeration_handler->n_dofs());
     petsc_solution_native.reinit(agglomeration_handler->n_dofs());
 
+    if (options.amg_backend ==
+        meshaware::AmgBackend::polydeal_agglomeration) {
+      TrilinosWrappers::SparsityPattern trilinos_sparsity;
+      agglomeration_handler->create_agglomeration_sparsity_pattern(
+          trilinos_sparsity);
+      trilinos_matrix.reinit(trilinos_sparsity);
+      const IndexSet &owned_dofs =
+          agglomeration_handler->agglo_dh.locally_owned_dofs();
+      const MPI_Comm communicator =
+          agglomeration_handler->agglo_dh.get_mpi_communicator();
+      trilinos_right_hand_side.reinit(owned_dofs, communicator);
+      trilinos_solution.reinit(owned_dofs, communicator);
+    }
+
     h_max = 0.0;
     for (const auto &polytope : agglomeration_handler->polytope_iterators())
       h_max = std::max(h_max, std::abs(polytope->diameter()));
@@ -484,6 +757,101 @@ private:
         update_values | update_gradients | update_quadrature_points |
             update_JxW_values,
         QGauss<1>(quadrature_degree));
+  }
+
+  void prepare_polygonal_nodal_boomeramg() {
+    const unsigned int dofs_per_polygon =
+        agglomeration_handler->n_dofs_per_cell();
+    if (dofs_per_polygon < 2)
+      throw std::runtime_error(
+          "polygonal-nodal requires multiple modal DoFs per polygon");
+
+    Mat raw_matrix = static_cast<Mat>(petsc_matrix);
+    meshaware::petsc_check(
+        MatSetBlockSize(raw_matrix, static_cast<PetscInt>(dofs_per_polygon)),
+        "MatSetBlockSize(polygonal modal block)");
+
+    // FE_AggloDGP is modal, so an all-ones coefficient vector is not the
+    // constant function. Interpolate one on the reference polygon and reuse
+    // those coefficients for every agglomerate.
+    std::vector<Point<2>> interpolation_points;
+    const unsigned int degree = finite_element.degree;
+    if (degree == 0) {
+      interpolation_points.emplace_back(0.5, 0.5);
+    } else {
+      for (unsigned int i = 0; i <= degree; ++i)
+        for (unsigned int j = 0; j + i <= degree; ++j)
+          interpolation_points.emplace_back(
+              static_cast<double>(i) / degree,
+              static_cast<double>(j) / degree);
+    }
+    if (interpolation_points.size() != dofs_per_polygon)
+      throw std::runtime_error(
+          "cannot interpolate the PolyDeal constant near-nullspace mode");
+
+    FullMatrix<double> vandermonde(dofs_per_polygon, dofs_per_polygon);
+    for (unsigned int row = 0; row < dofs_per_polygon; ++row)
+      for (unsigned int column = 0; column < dofs_per_polygon; ++column)
+        vandermonde(row, column) =
+            finite_element.shape_value(column, interpolation_points[row]);
+    FullMatrix<double> inverse_vandermonde(dofs_per_polygon,
+                                            dofs_per_polygon);
+    inverse_vandermonde.invert(vandermonde);
+    Vector<double> constant_values(dofs_per_polygon);
+    Vector<double> constant_coefficients(dofs_per_polygon);
+    constant_values = 1.0;
+    inverse_vandermonde.vmult(constant_coefficients, constant_values);
+
+    Vec near_nullspace_vector = nullptr;
+    meshaware::petsc_check(MatCreateVecs(raw_matrix, &near_nullspace_vector,
+                                         nullptr),
+                           "MatCreateVecs(near-nullspace)");
+    try {
+      meshaware::petsc_check(VecSet(near_nullspace_vector, 0.0),
+                             "VecSet(near-nullspace)");
+      std::vector<types::global_dof_index> dof_indices(dofs_per_polygon);
+      std::vector<PetscInt> petsc_indices(dofs_per_polygon);
+      std::vector<PetscScalar> petsc_values(dofs_per_polygon);
+      for (const auto &polytope :
+           agglomeration_handler->polytope_iterators()) {
+        polytope->get_dof_indices(dof_indices);
+        for (unsigned int index = 0; index < dofs_per_polygon; ++index) {
+          petsc_indices[index] = static_cast<PetscInt>(dof_indices[index]);
+          petsc_values[index] = constant_coefficients[index];
+        }
+        meshaware::petsc_check(
+            VecSetValues(near_nullspace_vector,
+                         static_cast<PetscInt>(dofs_per_polygon),
+                         petsc_indices.data(), petsc_values.data(),
+                         INSERT_VALUES),
+            "VecSetValues(near-nullspace)");
+      }
+      meshaware::petsc_check(VecAssemblyBegin(near_nullspace_vector),
+                             "VecAssemblyBegin(near-nullspace)");
+      meshaware::petsc_check(VecAssemblyEnd(near_nullspace_vector),
+                             "VecAssemblyEnd(near-nullspace)");
+      PetscReal norm = 0.0;
+      meshaware::petsc_check(VecNormalize(near_nullspace_vector, &norm),
+                             "VecNormalize(near-nullspace)");
+      if (!(norm > 0.0))
+        throw std::runtime_error("constant near-nullspace has zero norm");
+
+      MatNullSpace near_nullspace = nullptr;
+      meshaware::petsc_check(
+          MatNullSpaceCreate(PETSC_COMM_SELF, PETSC_FALSE, 1,
+                             &near_nullspace_vector, &near_nullspace),
+          "MatNullSpaceCreate");
+      const PetscErrorCode set_error =
+          MatSetNearNullSpace(raw_matrix, near_nullspace);
+      const PetscErrorCode destroy_error = MatNullSpaceDestroy(&near_nullspace);
+      meshaware::petsc_check(set_error, "MatSetNearNullSpace");
+      meshaware::petsc_check(destroy_error, "MatNullSpaceDestroy");
+    } catch (...) {
+      VecDestroy(&near_nullspace_vector);
+      throw;
+    }
+    meshaware::petsc_check(VecDestroy(&near_nullspace_vector),
+                           "VecDestroy(near-nullspace)");
   }
 
   double coefficient(const Point<2> &point) const {
@@ -507,6 +875,9 @@ private:
 
   void assemble_system() {
     const unsigned int dofs_per_cell = agglomeration_handler->n_dofs_per_cell();
+    const bool assemble_trilinos =
+        options.amg_backend ==
+        meshaware::AmgBackend::polydeal_agglomeration;
     const double penalty_constant = 10.0 * (finite_element.get_degree() + 1.0) *
                                     (finite_element.get_degree() + 2.0);
 
@@ -637,21 +1008,36 @@ private:
                                                  system_matrix);
         constraints.distribute_local_to_global(block_00, local_dof_indices,
                                                petsc_matrix);
+        if (assemble_trilinos)
+          constraints.distribute_local_to_global(block_00, local_dof_indices,
+                                                 trilinos_matrix);
         if (options.oracle)
           constraints.distribute_local_to_global(
               block_01, local_dof_indices, neighbor_dof_indices, system_matrix);
         constraints.distribute_local_to_global(
             block_01, local_dof_indices, neighbor_dof_indices, petsc_matrix);
+        if (assemble_trilinos)
+          constraints.distribute_local_to_global(
+              block_01, local_dof_indices, neighbor_dof_indices,
+              trilinos_matrix);
         if (options.oracle)
           constraints.distribute_local_to_global(
               block_10, neighbor_dof_indices, local_dof_indices, system_matrix);
         constraints.distribute_local_to_global(block_10, neighbor_dof_indices,
                                                local_dof_indices, petsc_matrix);
+        if (assemble_trilinos)
+          constraints.distribute_local_to_global(
+              block_10, neighbor_dof_indices, local_dof_indices,
+              trilinos_matrix);
         if (options.oracle)
           constraints.distribute_local_to_global(block_11, neighbor_dof_indices,
                                                  system_matrix);
         constraints.distribute_local_to_global(block_11, neighbor_dof_indices,
                                                petsc_matrix);
+        if (assemble_trilinos)
+          constraints.distribute_local_to_global(block_11,
+                                                 neighbor_dof_indices,
+                                                 trilinos_matrix);
       }
 
       if (options.oracle)
@@ -661,10 +1047,18 @@ private:
       constraints.distribute_local_to_global(cell_matrix, cell_rhs,
                                              local_dof_indices, petsc_matrix,
                                              petsc_right_hand_side);
+      if (assemble_trilinos)
+        constraints.distribute_local_to_global(
+            cell_matrix, cell_rhs, local_dof_indices, trilinos_matrix,
+            trilinos_right_hand_side);
     }
 
     petsc_matrix.compress(VectorOperation::add);
     petsc_right_hand_side.compress(VectorOperation::add);
+    if (assemble_trilinos) {
+      trilinos_matrix.compress(VectorOperation::add);
+      trilinos_right_hand_side.compress(VectorOperation::add);
+    }
   }
 
   std::uint64_t matrix_nonzeros() const {
@@ -725,7 +1119,10 @@ private:
     record.epsilon = options.epsilon;
     record.high_region = meshaware::to_string(options.high_region);
     record.theta = theta;
-    record.amg_smoother = meshaware::to_string(options.amg_smoother);
+    record.amg_backend = meshaware::to_string(options.amg_backend);
+    record.boomeramg_profile =
+        meshaware::to_string(options.boomeramg_profile);
+    record.amg_smoother = active_smoother_name();
     record.amg_relaxation_weight =
         options.amg_smoother == meshaware::AmgSmoother::damped_jacobi
             ? options.jacobi_damping
@@ -741,6 +1138,8 @@ private:
     record.residual_initial = solver_metrics.residual_initial;
     record.residual_final = solver_metrics.residual_final;
     record.convergence_factor = solver_metrics.convergence_factor;
+    record.grid_complexity = solver_metrics.grid_complexity;
+    record.operator_complexity = solver_metrics.operator_complexity;
     record.l2_error = errors.l2;
     record.h1_seminorm_error = errors.broken_h1;
     record.energy_error = errors.energy;
@@ -807,11 +1206,15 @@ private:
     return maximum_defect;
   }
 
-  meshaware::SolverMetrics solve_petsc(const double theta) {
+  meshaware::SolverMetrics solve_system(const double theta) {
+    if (options.amg_backend ==
+        meshaware::AmgBackend::polydeal_agglomeration)
+      return solve_with_polydeal_multigrid();
+
     const meshaware::AmgSolverOptions solver_options{
         options.relative_tolerance, options.absolute_tolerance,
         options.maximum_iterations, theta, options.amg_smoother,
-        options.jacobi_damping};
+        options.jacobi_damping, options.boomeramg_profile};
     const meshaware::SolverMetrics metrics = meshaware::solve_with_boomer_amg(
         static_cast<Mat>(petsc_matrix),
         static_cast<const Vec &>(petsc_right_hand_side),
@@ -826,6 +1229,164 @@ private:
     meshaware::petsc_check(VecRestoreArrayRead(raw_solution, &values),
                            "VecRestoreArrayRead(solution)");
     return metrics;
+  }
+
+  meshaware::SolverMetrics solve_with_polydeal_multigrid() {
+    using MatrixType = TrilinosWrappers::SparseMatrix;
+    using VectorType = LinearAlgebra::distributed::Vector<double>;
+
+    const auto setup_start = Clock::now();
+    const unsigned int n_levels = mg_agglomeration_handlers.size();
+    const unsigned int max_level = n_levels - 1;
+    const MPI_Comm communicator =
+        agglomeration_handler->agglo_dh.get_mpi_communicator();
+
+    std::vector<MatrixType> injection_matrices(n_levels - 1);
+    for (unsigned int level = 0; level < max_level; ++level)
+      fill_nested_injection_matrix(
+          *mg_agglomeration_handlers[level],
+          *mg_agglomeration_handlers[level + 1], mg_level_children[level],
+          injection_matrices[level]);
+
+    AmgProjector<2, MatrixType, double> projector(injection_matrices);
+    MGLevelObject<std::unique_ptr<MatrixType>> level_matrices(0, max_level);
+    level_matrices[max_level] = std::make_unique<MatrixType>();
+    level_matrices[max_level]->copy_from(trilinos_matrix);
+    projector.compute_level_matrices(level_matrices);
+
+    mg::Matrix<VectorType> multigrid_matrix(level_matrices);
+    std::unique_ptr<MGSmootherBase<VectorType>> multigrid_smoother;
+    std::vector<VectorType> inverse_diagonals(n_levels);
+
+    if (options.amg_smoother == meshaware::AmgSmoother::chebyshev) {
+      using Chebyshev = PreconditionChebyshev<MatrixType, VectorType>;
+      using ChebyshevSmoother =
+          mg::SmootherRelaxation<Chebyshev, VectorType>;
+      auto smoother = std::make_unique<ChebyshevSmoother>();
+      MGLevelObject<typename Chebyshev::AdditionalData> smoother_data(
+          0, max_level);
+      for (unsigned int level = 0; level <= max_level; ++level) {
+        const auto &matrix = *level_matrices[level];
+        inverse_diagonals[level].reinit(
+            matrix.locally_owned_range_indices(), communicator);
+        for (unsigned int row = matrix.local_range().first;
+             row < matrix.local_range().second; ++row) {
+          const double diagonal = matrix.diag_element(row);
+          if (std::abs(diagonal) <=
+              100.0 * std::numeric_limits<double>::epsilon())
+            throw std::runtime_error(
+                "zero diagonal encountered in PolyDeal multigrid hierarchy");
+          inverse_diagonals[level][row] = 1.0 / diagonal;
+        }
+        inverse_diagonals[level].compress(VectorOperation::insert);
+        smoother_data[level].preconditioner =
+            std::make_shared<DiagonalMatrix<VectorType>>(
+                inverse_diagonals[level]);
+        smoother_data[level].smoothing_range = 20.0;
+        smoother_data[level].degree = 3;
+        smoother_data[level].eig_cg_n_iterations =
+            std::min<unsigned int>(20, matrix.m());
+      }
+      smoother->set_steps(5);
+      smoother->initialize(level_matrices, smoother_data);
+      multigrid_smoother = std::move(smoother);
+    } else if (options.amg_smoother ==
+               meshaware::AmgSmoother::damped_jacobi) {
+      using Jacobi = TrilinosWrappers::PreconditionJacobi;
+      using JacobiSmoother =
+          MGSmootherPrecondition<MatrixType, Jacobi, VectorType>;
+      auto smoother = std::make_unique<JacobiSmoother>(5);
+      smoother->initialize(
+          level_matrices,
+          Jacobi::AdditionalData(options.jacobi_damping, 0.0, 1));
+      multigrid_smoother = std::move(smoother);
+    } else {
+      using SymmetricGaussSeidel = TrilinosWrappers::PreconditionSSOR;
+      using SymmetricGaussSeidelSmoother =
+          MGSmootherPrecondition<MatrixType, SymmetricGaussSeidel,
+                                 VectorType>;
+      auto smoother = std::make_unique<SymmetricGaussSeidelSmoother>(5);
+      smoother->initialize(
+          level_matrices,
+          SymmetricGaussSeidel::AdditionalData(1.0, 0.0, 0, 1));
+      multigrid_smoother = std::move(smoother);
+    }
+
+    Utils::MGCoarseDirect<VectorType, MatrixType,
+                          TrilinosWrappers::SolverDirect>
+        coarse_solver(*level_matrices[0]);
+
+    MGLevelObject<MatrixType *> level_transfers(0, max_level);
+    for (unsigned int level = 0; level < max_level; ++level)
+      level_transfers[level] = &injection_matrices[level];
+    level_transfers[max_level] = nullptr;
+
+    std::vector<DoFHandler<2> *> dof_handlers(n_levels);
+    for (unsigned int level = 0; level <= max_level; ++level)
+      dof_handlers[level] = &mg_agglomeration_handlers[level]->agglo_dh;
+    MGTransferAgglomeration<2, VectorType> transfer(level_transfers,
+                                                     dof_handlers);
+
+    Multigrid<VectorType> multigrid(
+        multigrid_matrix, coarse_solver, transfer, *multigrid_smoother,
+        *multigrid_smoother, 0, numbers::invalid_unsigned_int,
+        Multigrid<VectorType>::v_cycle);
+    PreconditionMG<2, VectorType,
+                   MGTransferAgglomeration<2, VectorType>>
+        preconditioner(agglomeration_handler->agglo_dh, multigrid, transfer);
+    const double setup_seconds = seconds_since(setup_start);
+
+    trilinos_solution = 0.0;
+    ReductionControl solver_control(
+        options.maximum_iterations, options.absolute_tolerance,
+        options.relative_tolerance);
+    solver_control.enable_history_data();
+    SolverCG<VectorType> solver(solver_control);
+    const auto solve_start = Clock::now();
+    solver.solve(trilinos_matrix, trilinos_solution,
+                 trilinos_right_hand_side, preconditioner);
+    const double solve_seconds = seconds_since(solve_start);
+
+    const auto &history = solver_control.get_history_data();
+    if (history.empty())
+      throw std::runtime_error(
+          "PolyDeal multigrid returned an empty residual history");
+    const unsigned int iterations = solver_control.last_step();
+    const double residual_initial = history.front();
+    const double residual_final = history.back();
+    const double convergence_factor =
+        iterations == 0 || residual_initial == 0.0
+            ? 0.0
+            : std::pow(residual_final / residual_initial,
+                       1.0 / static_cast<double>(iterations));
+
+    double hierarchy_rows = 0.0;
+    double hierarchy_nonzeros = 0.0;
+    for (unsigned int level = 0; level <= max_level; ++level) {
+      hierarchy_rows += static_cast<double>(level_matrices[level]->m());
+      hierarchy_nonzeros += static_cast<double>(
+          level_matrices[level]->n_nonzero_elements());
+    }
+    const double grid_complexity =
+        hierarchy_rows / static_cast<double>(level_matrices[max_level]->m());
+    const double operator_complexity =
+        hierarchy_nonzeros /
+        static_cast<double>(level_matrices[max_level]->n_nonzero_elements());
+
+    for (unsigned int index = 0; index < petsc_solution_native.size();
+         ++index)
+      petsc_solution_native[index] = trilinos_solution[index];
+
+    return {iterations,
+            n_levels,
+            residual_initial,
+            residual_final,
+            convergence_factor,
+            setup_seconds,
+            solve_seconds,
+            grid_complexity,
+            operator_complexity,
+            KSP_CONVERGED_RTOL};
   }
 
   double solution_equivalence_defect() const {
@@ -933,7 +1494,10 @@ private:
   MappingQ1<2> mapping;
   FE_AggloDGP<2> finite_element;
   std::unique_ptr<GridTools::Cache<2>> cached_triangulation;
-  std::unique_ptr<AgglomerationHandler<2>> agglomeration_handler;
+  std::vector<std::unique_ptr<AgglomerationHandler<2>>>
+      mg_agglomeration_handlers;
+  std::vector<std::vector<std::vector<unsigned int>>> mg_level_children;
+  AgglomerationHandler<2> *agglomeration_handler = nullptr;
   AffineConstraints<double> constraints;
   DynamicSparsityPattern dynamic_sparsity;
   SparsityPattern sparsity;
@@ -943,6 +1507,9 @@ private:
   PETScWrappers::SparseMatrix petsc_matrix;
   PETScWrappers::MPI::Vector petsc_right_hand_side;
   PETScWrappers::MPI::Vector petsc_solution;
+  TrilinosWrappers::SparseMatrix trilinos_matrix;
+  LinearAlgebra::distributed::Vector<double> trilinos_right_hand_side;
+  LinearAlgebra::distributed::Vector<double> trilinos_solution;
   Vector<double> petsc_solution_native;
   double h_max = 0.0;
 };

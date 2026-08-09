@@ -58,6 +58,10 @@ void write_json(std::ostream &output, const ExperimentRecord &record) {
          << "  \"high_region\": \"" << json_escape(record.high_region)
          << "\",\n"
          << "  \"theta\": " << record.theta << ",\n"
+         << "  \"amg_backend\": \"" << json_escape(record.amg_backend)
+         << "\",\n"
+         << "  \"boomeramg_profile\": \""
+         << json_escape(record.boomeramg_profile) << "\",\n"
          << "  \"amg_smoother\": \"" << json_escape(record.amg_smoother)
          << "\",\n"
          << "  \"amg_relaxation_weight\": "
@@ -74,6 +78,9 @@ void write_json(std::ostream &output, const ExperimentRecord &record) {
          << "  \"residual_initial\": " << record.residual_initial << ",\n"
          << "  \"residual_final\": " << record.residual_final << ",\n"
          << "  \"convergence_factor\": " << record.convergence_factor << ",\n"
+         << "  \"grid_complexity\": " << record.grid_complexity << ",\n"
+         << "  \"operator_complexity\": " << record.operator_complexity
+         << ",\n"
          << "  \"l2_error\": " << record.l2_error << ",\n"
          << "  \"h1_seminorm_error\": " << record.h1_seminorm_error << ",\n"
          << "  \"energy_error\": " << record.energy_error << ",\n"

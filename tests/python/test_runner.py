@@ -65,6 +65,64 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertIn("--skip-matrix-write", command)
         self.assertIn("--skip-existing-records", command)
 
+    def test_polygonal_command_carries_agglomeration_backend(self) -> None:
+        config = load_experiment_config(
+            REPO_ROOT / "configs" / "polygonal_smoke.json"
+        )
+        trial = next(config.iter_trials())
+        command = run_experiments.command_for(
+            Path("driver"),
+            config,
+            trial,
+            Path("record.json"),
+            Path("matrix.petsc"),
+            write_matrix=False,
+        )
+        self.assertEqual(
+            command[command.index("--amg-backend") + 1],
+            "polydeal-agglomeration",
+        )
+        self.assertEqual(
+            command[command.index("--boomeramg-profile") + 1], "default"
+        )
+
+    def test_polygonal_pilot_command_carries_nodal_profile(self) -> None:
+        config = load_experiment_config(
+            REPO_ROOT / "configs" / "polygonal_boomeramg_nodal_pilot.json"
+        )
+        trial = next(config.iter_trials())
+        command = run_experiments.command_for_batch(
+            Path("driver"),
+            config,
+            trial,
+            Path("records"),
+            Path("matrix.petsc"),
+            config.theta_values,
+            1,
+            write_matrix=False,
+            skip_existing_records=False,
+        )
+        self.assertEqual(
+            command[command.index("--boomeramg-profile") + 1],
+            "polygonal-nodal",
+        )
+        self.assertEqual(
+            command[command.index("--amg-smoother") + 1],
+            "symmetric-gauss-seidel",
+        )
+
+    def test_flat_single_family_output_uses_experiment_root(self) -> None:
+        config = load_experiment_config(
+            REPO_ROOT / "configs" / "medium_polygonal_chebyshev.json"
+        )
+        experiment_root = Path("datasets/medium/polygonal-chebyshev")
+        self.assertEqual(
+            run_experiments.output_root_for_family(
+                config, experiment_root, "polygonal"
+            ),
+            experiment_root,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

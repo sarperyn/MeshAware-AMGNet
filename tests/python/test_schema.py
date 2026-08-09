@@ -61,6 +61,8 @@ class ExperimentConfigTests(unittest.TestCase):
         config = self.load("smoke")
         self.assertEqual(config.trial_count, 1)
         self.assertEqual(config.warmup_runs, 1)
+        self.assertEqual(config.amg_backend, "boomeramg")
+        self.assertEqual(config.boomeramg_profile, "default")
         self.assertEqual(config.amg_smoother, "symmetric-gauss-seidel")
         self.assertAlmostEqual(config.jacobi_damping, 2.0 / 3.0)
         self.assertEqual(len(tuple(config.iter_trials())), 1)
@@ -69,8 +71,20 @@ class ExperimentConfigTests(unittest.TestCase):
         smoke = self.load("polygonal_smoke")
         convergence = self.load("polygonal_convergence")
         self.assertEqual(smoke.mesh_families, ("polygonal",))
+        self.assertEqual(smoke.amg_backend, "polydeal-agglomeration")
+        self.assertEqual(smoke.amg_smoother, "chebyshev")
         self.assertEqual(smoke.trial_count, 1)
         self.assertEqual(convergence.levels, (4, 5, 6))
+
+    def test_flat_output_requires_one_mesh_family(self) -> None:
+        config = self.load("medium_polygonal_chebyshev")
+        self.assertFalse(config.family_subdirectories)
+        with self.assertRaisesRegex(ValueError, "flat output"):
+            replace(
+                config,
+                mesh_families=("polygonal", "quadrilateral"),
+                amg_backend="boomeramg",
+            ).validate()
 
     def test_batch_smoke_grid(self) -> None:
         config = self.load("batch_smoke")
@@ -86,10 +100,45 @@ class ExperimentConfigTests(unittest.TestCase):
     def test_invalid_smoother_options_are_rejected(self) -> None:
         config = self.load("smoke")
         replace(config, amg_smoother="chebyshev").validate()
+        replace(
+            config, amg_smoother="l1-symmetric-gauss-seidel"
+        ).validate()
         with self.assertRaisesRegex(ValueError, "amg_smoother"):
             replace(config, amg_smoother="gauss-seidel").validate()
         with self.assertRaisesRegex(ValueError, "jacobi_damping"):
             replace(config, jacobi_damping=0.0).validate()
+
+    def test_polygonal_nodal_pilot_grid(self) -> None:
+        config = self.load("polygonal_boomeramg_nodal_pilot")
+        self.assertEqual(config.mesh_families, ("polygonal",))
+        self.assertEqual(config.amg_backend, "boomeramg")
+        self.assertEqual(config.boomeramg_profile, "polygonal-nodal")
+        self.assertEqual(config.amg_smoother, "symmetric-gauss-seidel")
+        self.assertEqual(config.trial_count, 40)
+
+        medium = self.load("medium_polygonal_boomeramg_nodal")
+        self.assertEqual(medium.levels, (3, 5, 8, 10))
+        self.assertEqual(medium.trial_count, 1920)
+        self.assertEqual(medium.boomeramg_profile, "polygonal-nodal")
+
+    def test_polygonal_nodal_profile_is_scoped(self) -> None:
+        config = self.load("smoke")
+        with self.assertRaisesRegex(ValueError, "polygonal-nodal"):
+            replace(config, boomeramg_profile="polygonal-nodal").validate()
+        with self.assertRaisesRegex(ValueError, "boomeramg_profile"):
+            replace(config, boomeramg_profile="unknown").validate()
+        pilot = self.load("polygonal_boomeramg_nodal_pilot")
+        with self.assertRaisesRegex(ValueError, "incompatible"):
+            replace(
+                pilot, amg_smoother="l1-symmetric-gauss-seidel"
+            ).validate()
+
+    def test_polydeal_backend_requires_polygonal_only_meshes(self) -> None:
+        config = self.load("smoke")
+        with self.assertRaisesRegex(ValueError, "polygonal-only"):
+            replace(config, amg_backend="polydeal-agglomeration").validate()
+        with self.assertRaisesRegex(ValueError, "amg_backend"):
+            replace(config, amg_backend="unknown").validate()
 
 
 if __name__ == "__main__":

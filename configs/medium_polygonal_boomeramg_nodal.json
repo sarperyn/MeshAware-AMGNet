@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "medium-polygonal-boomeramg-nodal",
+  "mesh_families": ["polygonal"],
+  "levels": [3, 5, 8, 10],
+  "amg_backend": "boomeramg",
+  "boomeramg_profile": "polygonal-nodal",
+  "amg_smoother": "symmetric-gauss-seidel",
+  "theta": {"start": 0.02, "stop": 0.90, "count": 10},
+  "repeats": 1
+}

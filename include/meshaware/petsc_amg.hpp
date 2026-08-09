@@ -6,14 +6,31 @@
 
 namespace meshaware {
 
+enum class AmgBackend {
+  boomeramg,
+  polydeal_agglomeration,
+};
+
+AmgBackend parse_amg_backend(std::string_view name);
+const char *to_string(AmgBackend backend);
+
 enum class AmgSmoother {
   chebyshev,
   damped_jacobi,
+  l1_symmetric_gauss_seidel,
   symmetric_gauss_seidel,
 };
 
 AmgSmoother parse_amg_smoother(std::string_view name);
 const char *to_string(AmgSmoother smoother);
+
+enum class BoomerAmgProfile {
+  default_options,
+  polygonal_nodal,
+};
+
+BoomerAmgProfile parse_boomeramg_profile(std::string_view name);
+const char *to_string(BoomerAmgProfile profile);
 
 struct AmgSolverOptions {
   double relative_tolerance = 1e-8;
@@ -22,6 +39,7 @@ struct AmgSolverOptions {
   double strong_threshold = 0.24;
   AmgSmoother smoother = AmgSmoother::symmetric_gauss_seidel;
   double jacobi_damping = 2.0 / 3.0;
+  BoomerAmgProfile profile = BoomerAmgProfile::default_options;
 };
 
 struct SolverMetrics {
@@ -32,6 +50,8 @@ struct SolverMetrics {
   double convergence_factor = 0.0;
   double setup_seconds = 0.0;
   double solve_seconds = 0.0;
+  double grid_complexity = 0.0;
+  double operator_complexity = 0.0;
   KSPConvergedReason reason = KSP_CONVERGED_ITERATING;
 };
 

@@ -1,12 +1,11 @@
 {
   "schema_version": 1,
-  "name": "polygonal_smoke",
+  "name": "polygonal-chebyshev",
   "mesh_families": ["polygonal"],
-  "levels": [2],
-  "patterns": ["checkerboard_4x4"],
-  "epsilons": [2.0],
+  "levels": [3, 5, 8, 10],
   "amg_backend": "polydeal-agglomeration",
   "amg_smoother": "chebyshev",
+  "family_subdirectories": false,
   "theta": {"start": 0.24, "stop": 0.24, "count": 1},
   "repeats": 1
 }

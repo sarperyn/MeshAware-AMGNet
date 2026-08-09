@@ -5,6 +5,8 @@
   "levels": [4, 5, 6],
   "patterns": ["vertical_split"],
   "epsilons": [0.0],
+  "amg_backend": "polydeal-agglomeration",
+  "amg_smoother": "chebyshev",
   "theta": {"start": 0.24, "stop": 0.24, "count": 1},
   "repeats": 1
 }

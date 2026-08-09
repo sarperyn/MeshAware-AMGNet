@@ -182,8 +182,8 @@ Options parse_options(const int argc, char **argv) {
           << "  --theta T              BoomerAMG strong threshold\n"
           << "  --theta-values CSV     batched strong-threshold grid\n"
           << "  --rtol T --atol T --max-iterations N\n"
-          << "  --amg-smoother NAME    chebyshev, damped-jacobi, or "
-             "symmetric-gauss-seidel\n"
+          << "  --amg-smoother NAME    chebyshev, damped-jacobi, "
+             "l1-symmetric-gauss-seidel, or symmetric-gauss-seidel\n"
           << "  --jacobi-damping W     damping in (0,1], default 2/3\n"
           << "  --repeat N              timing repeat identifier\n"
           << "  --repeats N             repeats per theta in batch mode\n"
@@ -331,7 +331,10 @@ private:
               << " amg_levels=" << solver_metrics.amg_levels
               << " rho=" << solver_metrics.convergence_factor
               << " setup_s=" << solver_metrics.setup_seconds
-              << " solve_s=" << solver_metrics.solve_seconds << '\n';
+              << " solve_s=" << solver_metrics.solve_seconds
+              << " grid_complexity=" << solver_metrics.grid_complexity
+              << " operator_complexity="
+              << solver_metrics.operator_complexity << '\n';
   }
 
   void make_grid() {
@@ -565,6 +568,8 @@ private:
     record.residual_initial = solver_metrics.residual_initial;
     record.residual_final = solver_metrics.residual_final;
     record.convergence_factor = solver_metrics.convergence_factor;
+    record.grid_complexity = solver_metrics.grid_complexity;
+    record.operator_complexity = solver_metrics.operator_complexity;
     record.l2_error = errors.l2;
     record.h1_seminorm_error = errors.h1_seminorm;
     record.energy_error = errors.energy;

@@ -14,7 +14,14 @@ PATTERNS = (
     "checkerboard_4x4",
 )
 MESH_FAMILIES = ("quadrilateral", "simplex", "polygonal")
-AMG_SMOOTHERS = ("chebyshev", "damped-jacobi", "symmetric-gauss-seidel")
+AMG_BACKENDS = ("boomeramg", "polydeal-agglomeration")
+BOOMERAMG_PROFILES = ("default", "polygonal-nodal")
+AMG_SMOOTHERS = (
+    "chebyshev",
+    "damped-jacobi",
+    "l1-symmetric-gauss-seidel",
+    "symmetric-gauss-seidel",
+)
 
 
 def _linspace(start: float, stop: float, count: int) -> tuple[float, ...]:
@@ -40,6 +47,8 @@ class ExperimentConfig:
     relative_tolerance: float
     absolute_tolerance: float
     maximum_iterations: int
+    amg_backend: str
+    boomeramg_profile: str
     amg_smoother: str
     jacobi_damping: float
     warmup_runs: int
@@ -47,6 +56,7 @@ class ExperimentConfig:
     repeats_by_level: dict[int, int]
     save_matrix: bool
     matrix_format: str
+    family_subdirectories: bool
 
     def validate(self) -> None:
         if not self.name:
@@ -73,8 +83,44 @@ class ExperimentConfig:
             raise ValueError("solver tolerances must be valid")
         if self.maximum_iterations < 1 or self.repeats < 1:
             raise ValueError("iteration and repeat counts must be positive")
+        if self.amg_backend not in AMG_BACKENDS:
+            raise ValueError(f"amg_backend must be chosen from {AMG_BACKENDS}")
+        if (
+            self.amg_backend == "polydeal-agglomeration"
+            and self.mesh_families != ("polygonal",)
+        ):
+            raise ValueError(
+                "polydeal-agglomeration requires polygonal-only mesh_families"
+            )
+        if self.boomeramg_profile not in BOOMERAMG_PROFILES:
+            raise ValueError(
+                f"boomeramg_profile must be chosen from {BOOMERAMG_PROFILES}"
+            )
+        if self.boomeramg_profile == "polygonal-nodal" and (
+            self.amg_backend != "boomeramg"
+            or self.mesh_families != ("polygonal",)
+        ):
+            raise ValueError(
+                "polygonal-nodal requires the boomeramg backend and a "
+                "polygonal-only experiment"
+            )
         if self.amg_smoother not in AMG_SMOOTHERS:
             raise ValueError(f"amg_smoother must be chosen from {AMG_SMOOTHERS}")
+        if (
+            self.amg_backend == "polydeal-agglomeration"
+            and self.amg_smoother == "l1-symmetric-gauss-seidel"
+        ):
+            raise ValueError(
+                "l1-symmetric-gauss-seidel is available only for BoomerAMG"
+            )
+        if (
+            self.boomeramg_profile == "polygonal-nodal"
+            and self.amg_smoother == "l1-symmetric-gauss-seidel"
+        ):
+            raise ValueError(
+                "polygonal-nodal is incompatible with HYPRE's "
+                "l1-symmetric-gauss-seidel relaxation"
+            )
         if not 0.0 < self.jacobi_damping <= 1.0:
             raise ValueError("jacobi_damping must lie in (0,1]")
         if self.warmup_runs < 0:
@@ -86,6 +132,10 @@ class ExperimentConfig:
         if self.matrix_format not in ("petsc_binary", "scipy_csr_npz"):
             raise ValueError(
                 "matrix_format must be 'petsc_binary' or 'scipy_csr_npz'"
+            )
+        if not self.family_subdirectories and len(self.mesh_families) != 1:
+            raise ValueError(
+                "flat output requires exactly one configured mesh family"
             )
 
     @property
@@ -159,8 +209,12 @@ class TrialRecord:
     solve_time_seconds: float
     matrix_format: str
     matrix_path: str
+    amg_backend: str = "boomeramg"
+    boomeramg_profile: str = "default"
     amg_smoother: str = "symmetric-gauss-seidel"
     amg_relaxation_weight: float = 1.0
+    grid_complexity: float = 0.0
+    operator_complexity: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -201,6 +255,8 @@ def load_experiment_config(
         relative_tolerance=float(merged["relative_tolerance"]),
         absolute_tolerance=float(merged["absolute_tolerance"]),
         maximum_iterations=int(merged["maximum_iterations"]),
+        amg_backend=str(merged.get("amg_backend", "boomeramg")),
+        boomeramg_profile=str(merged.get("boomeramg_profile", "default")),
         amg_smoother=str(
             merged.get("amg_smoother", "symmetric-gauss-seidel")
         ),
@@ -210,6 +266,7 @@ def load_experiment_config(
         repeats_by_level=repeats_by_level,
         save_matrix=bool(merged["save_matrix"]),
         matrix_format=str(merged["matrix_format"]),
+        family_subdirectories=bool(merged.get("family_subdirectories", True)),
     )
     config.validate()
     return config

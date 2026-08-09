@@ -18,6 +18,8 @@ struct ExperimentRecord {
   double epsilon = 0.0;
   std::string high_region;
   double theta = 0.0;
+  std::string amg_backend = "boomeramg";
+  std::string boomeramg_profile = "default";
   std::string amg_smoother = "symmetric-gauss-seidel";
   double amg_relaxation_weight = 1.0;
   unsigned int repeat = 0;
@@ -31,6 +33,8 @@ struct ExperimentRecord {
   double residual_initial = 0.0;
   double residual_final = 0.0;
   double convergence_factor = 0.0;
+  double grid_complexity = 0.0;
+  double operator_complexity = 0.0;
   double l2_error = 0.0;
   double h1_seminorm_error = 0.0;
   double energy_error = 0.0;

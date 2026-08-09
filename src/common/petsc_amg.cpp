@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace meshaware {
 namespace {
@@ -27,18 +28,49 @@ constexpr const char *smoother_option =
     "-meshaware_pc_hypre_boomeramg_relax_type_all";
 constexpr const char *relaxation_weight_option =
     "-meshaware_pc_hypre_boomeramg_relax_weight_all";
+constexpr const char *coarsen_type_option =
+    "-meshaware_pc_hypre_boomeramg_coarsen_type";
+constexpr const char *interpolation_type_option =
+    "-meshaware_pc_hypre_boomeramg_interp_type";
+constexpr const char *nodal_coarsening_option =
+    "-meshaware_pc_hypre_boomeramg_nodal_coarsen";
+constexpr const char *vector_interpolation_option =
+    "-meshaware_pc_hypre_boomeramg_vec_interp_variant";
+constexpr const char *vector_interpolation_qmax_option =
+    "-meshaware_pc_hypre_boomeramg_vec_interp_qmax";
 } // namespace
+
+AmgBackend parse_amg_backend(const std::string_view name) {
+  if (name == "boomeramg")
+    return AmgBackend::boomeramg;
+  if (name == "polydeal-agglomeration")
+    return AmgBackend::polydeal_agglomeration;
+  throw std::invalid_argument(
+      "AMG backend must be 'boomeramg' or 'polydeal-agglomeration'");
+}
+
+const char *to_string(const AmgBackend backend) {
+  switch (backend) {
+  case AmgBackend::boomeramg:
+    return "boomeramg";
+  case AmgBackend::polydeal_agglomeration:
+    return "polydeal-agglomeration";
+  }
+  throw std::invalid_argument("unknown AMG backend");
+}
 
 AmgSmoother parse_amg_smoother(const std::string_view name) {
   if (name == "chebyshev")
     return AmgSmoother::chebyshev;
   if (name == "damped-jacobi")
     return AmgSmoother::damped_jacobi;
+  if (name == "l1-symmetric-gauss-seidel")
+    return AmgSmoother::l1_symmetric_gauss_seidel;
   if (name == "symmetric-gauss-seidel")
     return AmgSmoother::symmetric_gauss_seidel;
   throw std::invalid_argument(
-      "AMG smoother must be 'chebyshev', 'damped-jacobi', or "
-      "'symmetric-gauss-seidel'");
+      "AMG smoother must be 'chebyshev', 'damped-jacobi', "
+      "'l1-symmetric-gauss-seidel', or 'symmetric-gauss-seidel'");
 }
 
 const char *to_string(const AmgSmoother smoother) {
@@ -47,10 +79,31 @@ const char *to_string(const AmgSmoother smoother) {
     return "chebyshev";
   case AmgSmoother::damped_jacobi:
     return "damped-jacobi";
+  case AmgSmoother::l1_symmetric_gauss_seidel:
+    return "l1-symmetric-gauss-seidel";
   case AmgSmoother::symmetric_gauss_seidel:
     return "symmetric-gauss-seidel";
   }
   throw std::invalid_argument("unknown AMG smoother");
+}
+
+BoomerAmgProfile parse_boomeramg_profile(const std::string_view name) {
+  if (name == "default")
+    return BoomerAmgProfile::default_options;
+  if (name == "polygonal-nodal")
+    return BoomerAmgProfile::polygonal_nodal;
+  throw std::invalid_argument(
+      "BoomerAMG profile must be 'default' or 'polygonal-nodal'");
+}
+
+const char *to_string(const BoomerAmgProfile profile) {
+  switch (profile) {
+  case BoomerAmgProfile::default_options:
+    return "default";
+  case BoomerAmgProfile::polygonal_nodal:
+    return "polygonal-nodal";
+  }
+  throw std::invalid_argument("unknown BoomerAMG profile");
 }
 
 void petsc_check(const PetscErrorCode error, const char *operation) {
@@ -72,9 +125,21 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
 
   KSP ksp = nullptr;
   PC preconditioner = nullptr;
-  bool threshold_option_is_set = false;
-  bool smoother_option_is_set = false;
-  bool relaxation_weight_option_is_set = false;
+  std::vector<const char *> configured_options;
+
+  const auto clear_configured_options = [&configured_options]() {
+    for (auto option = configured_options.rbegin();
+         option != configured_options.rend(); ++option)
+      PetscOptionsClearValue(nullptr, *option);
+    configured_options.clear();
+  };
+
+  const auto set_option = [&configured_options](const char *name,
+                                                 const char *value) {
+    petsc_check(PetscOptionsSetValue(nullptr, name, value),
+                "PetscOptionsSetValue");
+    configured_options.push_back(name);
+  };
 
   petsc_check(KSPCreate(PETSC_COMM_SELF, &ksp), "KSPCreate");
   try {
@@ -96,31 +161,48 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
     petsc_check(PCSetType(preconditioner, PCHYPRE), "PCSetType");
     petsc_check(PCHYPRESetType(preconditioner, "boomeramg"), "PCHYPRESetType");
 
-    const std::string threshold =
-        petsc_real_option(options.strong_threshold);
-    petsc_check(PetscOptionsSetValue(nullptr, strong_threshold_option,
-                                     threshold.c_str()),
-                "PetscOptionsSetValue(strong_threshold)");
-    threshold_option_is_set = true;
+    if (options.profile == BoomerAmgProfile::polygonal_nodal) {
+      PetscInt block_size = 1;
+      petsc_check(MatGetBlockSize(matrix, &block_size), "MatGetBlockSize");
+      if (block_size < 2)
+        throw std::invalid_argument(
+            "polygonal-nodal requires a matrix block size greater than one");
+      MatNullSpace near_nullspace = nullptr;
+      petsc_check(MatGetNearNullSpace(matrix, &near_nullspace),
+                  "MatGetNearNullSpace");
+      if (near_nullspace == nullptr)
+        throw std::invalid_argument(
+            "polygonal-nodal requires a matrix near-nullspace");
+      set_option(coarsen_type_option, "HMIS");
+      set_option(interpolation_type_option, "ext+i");
+      set_option(nodal_coarsening_option, "1");
+      set_option(vector_interpolation_option, "2");
+      // There is one supplied near-nullspace vector, so at most one
+      // additional Q entry per interpolation row is needed. Without this
+      // cap HYPRE substantially increases operator complexity on the DG
+      // hierarchy without improving the observed iteration count.
+      set_option(vector_interpolation_qmax_option, "1");
+    }
+
+    const std::string threshold = petsc_real_option(options.strong_threshold);
+    set_option(strong_threshold_option, threshold.c_str());
 
     const char *hypre_smoother = "symmetric-SOR/Jacobi";
     if (options.smoother == AmgSmoother::chebyshev)
       hypre_smoother = "Chebyshev";
     else if (options.smoother == AmgSmoother::damped_jacobi)
       hypre_smoother = "Jacobi";
-    petsc_check(PetscOptionsSetValue(nullptr, smoother_option, hypre_smoother),
-                "PetscOptionsSetValue(smoother)");
-    smoother_option_is_set = true;
+    else if (options.smoother ==
+             AmgSmoother::l1_symmetric_gauss_seidel)
+      hypre_smoother = "l1scaled-SOR/Jacobi";
+    set_option(smoother_option, hypre_smoother);
 
     const double relaxation_weight =
         options.smoother == AmgSmoother::damped_jacobi
             ? options.jacobi_damping
             : 1.0;
     const std::string weight = petsc_real_option(relaxation_weight);
-    petsc_check(PetscOptionsSetValue(nullptr, relaxation_weight_option,
-                                     weight.c_str()),
-                "PetscOptionsSetValue(relaxation_weight)");
-    relaxation_weight_option_is_set = true;
+    set_option(relaxation_weight_option, weight.c_str());
 
     petsc_check(KSPSetFromOptions(ksp), "KSPSetFromOptions");
 
@@ -172,22 +254,40 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
         "PCGetCoarseOperators");
     if (amg_levels < 1)
       throw std::runtime_error("BoomerAMG returned an empty hierarchy");
+    PetscInt fine_rows = 0;
+    PetscInt fine_columns = 0;
+    MatInfo fine_information;
+    petsc_check(MatGetSize(matrix, &fine_rows, &fine_columns), "MatGetSize");
+    petsc_check(MatGetInfo(matrix, MAT_GLOBAL_SUM, &fine_information),
+                "MatGetInfo");
+    if (fine_rows < 1 || fine_columns != fine_rows ||
+        fine_information.nz_used <= 0.0)
+      throw std::runtime_error("invalid fine operator dimensions");
+    double hierarchy_rows = static_cast<double>(fine_rows);
+    double hierarchy_nonzeros = fine_information.nz_used;
     // PETSc fills one wrapper per coarse level. Its final allocation slot
     // represents the fine operator and is intentionally left unpopulated.
-    for (PetscInt level = 0; level + 1 < amg_levels; ++level)
+    for (PetscInt level = 0; level + 1 < amg_levels; ++level) {
+      PetscInt rows = 0;
+      PetscInt columns = 0;
+      MatInfo information;
+      petsc_check(MatGetSize(coarse_operators[level], &rows, &columns),
+                  "MatGetSize(coarse operator)");
+      petsc_check(MatGetInfo(coarse_operators[level], MAT_GLOBAL_SUM,
+                             &information),
+                  "MatGetInfo(coarse operator)");
+      hierarchy_rows += static_cast<double>(rows);
+      hierarchy_nonzeros += information.nz_used;
       petsc_check(MatDestroy(&coarse_operators[level]),
                   "MatDestroy(coarse operator)");
+    }
     petsc_check(PetscFree(coarse_operators), "PetscFree(coarse operators)");
+    const double grid_complexity =
+        hierarchy_rows / static_cast<double>(fine_rows);
+    const double operator_complexity =
+        hierarchy_nonzeros / fine_information.nz_used;
 
-    petsc_check(PetscOptionsClearValue(nullptr, strong_threshold_option),
-                "PetscOptionsClearValue(strong_threshold)");
-    threshold_option_is_set = false;
-    petsc_check(PetscOptionsClearValue(nullptr, smoother_option),
-                "PetscOptionsClearValue(smoother)");
-    smoother_option_is_set = false;
-    petsc_check(PetscOptionsClearValue(nullptr, relaxation_weight_option),
-                "PetscOptionsClearValue(relaxation_weight)");
-    relaxation_weight_option_is_set = false;
+    clear_configured_options();
     petsc_check(KSPDestroy(&ksp), "KSPDestroy");
 
     return {static_cast<unsigned int>(iterations),
@@ -197,14 +297,11 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
             convergence_factor,
             setup_seconds,
             solve_seconds,
+            grid_complexity,
+            operator_complexity,
             reason};
   } catch (...) {
-    if (threshold_option_is_set)
-      PetscOptionsClearValue(nullptr, strong_threshold_option);
-    if (smoother_option_is_set)
-      PetscOptionsClearValue(nullptr, smoother_option);
-    if (relaxation_weight_option_is_set)
-      PetscOptionsClearValue(nullptr, relaxation_weight_option);
+    clear_configured_options();
     if (ksp != nullptr)
       KSPDestroy(&ksp);
     throw;

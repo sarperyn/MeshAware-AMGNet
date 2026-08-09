@@ -71,6 +71,11 @@ if(MESHAWARE_BUILD_DEALII)
       )
 
       if(POLYDEAL_INCLUDE_DIR AND POLYDEAL_LIBRARY)
+        if(NOT DEAL_II_WITH_TRILINOS)
+          message(FATAL_ERROR
+            "The PolyDeal agglomeration multigrid backend requires deal.II "
+            "with Trilinos support.")
+        endif()
         add_executable(
           meshaware_diffusion_polydeal
           src/polydeal/diffusion_polydeal.cpp
@@ -126,11 +131,64 @@ if(MESHAWARE_BUILD_DEALII)
               --theta 0.24
               --amg-smoother chebyshev
           )
+          add_test(
+            NAME polydeal_boomeramg_nodal_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 7
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend boomeramg
+              --boomeramg-profile polygonal-nodal
+              --amg-smoother symmetric-gauss-seidel
+          )
+          add_test(
+            NAME polydeal_agglomeration_multigrid_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 2
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend polydeal-agglomeration
+              --amg-smoother chebyshev
+              --oracle
+          )
+          add_test(
+            NAME polydeal_agglomeration_damped_jacobi_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 2
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend polydeal-agglomeration
+              --amg-smoother damped-jacobi
+              --jacobi-damping 0.6666666666666666
+              --oracle
+          )
+          add_test(
+            NAME polydeal_agglomeration_symmetric_gauss_seidel_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 2
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend polydeal-agglomeration
+              --amg-smoother symmetric-gauss-seidel
+              --oracle
+          )
           set_tests_properties(
             polydeal_production_smoke
             polydeal_native_oracle
             polydeal_assemble_only
             polydeal_chebyshev_smoke
+            polydeal_boomeramg_nodal_smoke
+            polydeal_agglomeration_multigrid_smoke
+            polydeal_agglomeration_damped_jacobi_smoke
+            polydeal_agglomeration_symmetric_gauss_seidel_smoke
             PROPERTIES ENVIRONMENT "OMPI_MCA_btl=self"
           )
           foreach(_pattern

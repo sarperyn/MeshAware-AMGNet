@@ -1,8 +1,8 @@
 # MeshAware-AMG
 
-Reproducible finite-element experiments and machine-learning tools for
-selecting the HYPRE BoomerAMG strong-threshold parameter in heterogeneous
-diffusion problems.
+Reproducible finite-element experiments for heterogeneous diffusion,
+polygon-aware multigrid preconditioners, and machine-learning tools for
+selecting the HYPRE BoomerAMG strong-threshold parameter.
 
 ## Overview
 
@@ -27,9 +27,12 @@ multiple refinement levels, and three mesh families:
 - Polygonal symmetric interior-penalty discontinuous Galerkin elements.
 
 The C++ solvers assemble finite-element operators and run conjugate gradient
-with HYPRE BoomerAMG. The Python pipeline manages experiments, validates and
-stores sparse matrices, produces statistical reports, trains a convolutional
-model, and evaluates model-selected AMG parameters.
+with a multigrid preconditioner. Quadrilateral and simplex systems use HYPRE
+BoomerAMG. Polygonal systems can use default scalar BoomerAMG, a block-aware
+nodal BoomerAMG profile, or an explicit PolyDeal agglomeration hierarchy. The
+Python pipeline manages experiments, validates and stores sparse matrices,
+produces statistical reports, trains a convolutional model, and evaluates
+model-selected BoomerAMG parameters.
 
 ## Scientific scope
 
@@ -39,10 +42,13 @@ use [deal.II](https://dealii.org/). The polygonal implementation in
 [PolyDeal](https://github.com/fdrmrc/Polydeal) and a symmetric interior-penalty
 discontinuous Galerkin formulation.
 
-All mesh families use the same [PETSc](https://petsc.org/) conjugate-gradient
-and [HYPRE BoomerAMG](https://hypre.readthedocs.io/en/latest/solvers-boomeramg.html)
+The BoomerAMG experiments use the same [PETSc](https://petsc.org/)
+conjugate-gradient and
+[HYPRE BoomerAMG](https://hypre.readthedocs.io/en/latest/solvers-boomeramg.html)
 measurement path. This keeps solver configuration, residual handling, timing
-boundaries, and output records consistent across discretizations.
+boundaries, and output records consistent across discretizations. The explicit
+PolyDeal hierarchy uses deal.II CG with Trilinos matrices but follows the same
+residual, timing, and record contract.
 
 The manufactured cosine solution supplies the forcing term and the full
 Dirichlet trace. At \(\epsilon=0\), the coefficient is uniform and the problem
@@ -50,6 +56,31 @@ becomes the Poisson baseline. For heterogeneous cases, \(\mu\) takes the values
 \(1\) and \(10^\epsilon\). The selected high-coefficient region is recorded
 explicitly because the reference paper contains two conflicting color
 conventions.
+
+## Solver and preconditioner variants
+
+The repository currently implements the following solver paths:
+
+| Discretization | Preconditioner | Selection | Hierarchy construction |
+|---|---|---|---|
+| Quadrilateral Q1 or simplex P1 | HYPRE BoomerAMG | Default | Scalar algebraic strength, coarsening, and interpolation |
+| Polygonal SIPG | HYPRE BoomerAMG | `--amg-backend boomeramg --boomeramg-profile default` | Scalar algebraic hierarchy |
+| Polygonal SIPG | HYPRE nodal BoomerAMG | `--amg-backend boomeramg --boomeramg-profile polygonal-nodal` | Block-aware algebraic hierarchy using one three-DoF node per polygon |
+| Polygonal SIPG | PolyDeal agglomeration multigrid | `--amg-backend polydeal-agglomeration` | Explicit nested polygon agglomerates and Galerkin coarse operators |
+
+The `polygonal-nodal` option is still an **algebraic multigrid
+preconditioner**. It does not construct a geometric mesh hierarchy. It gives
+BoomerAMG finite-element metadata that the scalar matrix graph does not
+contain: the three modal `FE_AggloDGP(1)` coefficients on one polygon form a
+block, and the projected constant function is a near-nullspace mode. HYPRE
+then builds the hierarchy algebraically using nodal coarsening, HMIS, and
+extended+i interpolation.
+
+The explicit `polydeal-agglomeration` backend is a separate implementation. It
+merges neighboring polygons without crossing the common coefficient-tile
+boundaries, builds modal transfer operators and Galerkin level matrices, uses
+a direct coarse solve, and applies a symmetric V-cycle preconditioner to CG.
+The BoomerAMG strength threshold `theta` does not apply to this backend.
 
 ## Techniques worth studying
 
@@ -67,21 +98,34 @@ conventions.
   a possible coefficient discontinuity, and geometry remains fixed when the
   coefficient pattern changes.
 
+- **Block-aware algebraic multigrid for polygonal DG.** The nodal BoomerAMG
+  profile groups the three degree-one modal unknowns on each polygon and
+  supplies the correctly projected constant mode. This prevents scalar
+  coarsening from splitting a physical polygon and improves the coarse
+  representation of low-energy error.
+
+- **Explicit polygon agglomeration hierarchy.** The alternative PolyDeal
+  backend recursively merges polygons inside coefficient tiles, constructs
+  exact modal injection operators, obtains coarse matrices by Galerkin
+  projection, and applies configurable five-step smoothers in a V-cycle.
+
 - **Independent solver timings.** Assembly, AMG hierarchy construction, and
   iterative solution are measured separately. Calling `KSPSetUp` before
   `KSPSolve` prevents lazy preconditioner construction from entering the solve
   interval.
 
 - **Assemble-once experiment batches.** Each matrix is assembled and exported
-  once. Every threshold and timing repeat receives a fresh PETSc KSP and AMG
-  hierarchy, including discarded warm-up runs.
+  once. Every BoomerAMG threshold and timing repeat receives a fresh PETSc KSP
+  and hierarchy, including discarded warm-up runs. The explicit PolyDeal
+  backend similarly rebuilds its multigrid state for every timing run.
 
 - **Residual-based convergence measurements.** The solver records the
   unpreconditioned residual history and computes
   \[
   \rho=\left(\frac{\lVert r_N\rVert_2}{\lVert r_0\rVert_2}\right)^{1/N}.
   \]
-  It also records the BoomerAMG hierarchy depth and PETSc convergence reason.
+  It also records hierarchy depth, grid complexity, operator complexity, and
+  the solver convergence reason.
 
 - **Independent polygonal correctness oracle.** Validation mode inserts the
   same SIPG contributions into native and PETSc matrices, checks entrywise
@@ -125,6 +169,62 @@ conventions.
   with [PGFPlots](https://ctan.org/pkg/pgfplots), and direct
   [SVG](https://developer.mozilla.org/en-US/docs/Web/SVG) output.
 
+## Current checked-in results
+
+### Polygonal multigrid experiments
+
+The original medium polygonal sweep exposed severe mesh-dependent iteration
+growth with scalar BoomerAMG. The difficult level-8, `checkerboard_4x4`,
+\(\epsilon=7\) cases required 2,232--2,703 CG iterations across the theta
+grid. With the nodal BoomerAMG profile, the same matrices require 116--278
+iterations. At the best observed nodal theta, the convergence factor falls
+from approximately 0.992 to 0.852.
+
+Across the 1,519 matching records currently available in both datasets, the
+median iteration count falls from 154 to 71, and 1,497 records improve. The
+level summary is:
+
+| Refinement | Scalar BoomerAMG median / maximum | Nodal BoomerAMG median / maximum |
+|---|---:|---:|
+| 3 | 62.5 / 254 | 46 / 207 |
+| 5 | 144 / 809 | 81.5 / 568 |
+| 8 | 308 / 2,703 | 98.5 / 776 |
+| 10, partial | 425 / 447 | 75 / 178 |
+
+Levels 3, 5, and 8 are complete in both compared sweeps; level 10 remains
+partial. These numbers measure the combined nodal profile, not an ablation of
+its individual HYPRE settings. See the
+[scalar trials](datasets/medium/polygonal/diffusion_reports/trials.csv),
+[nodal trials](datasets/medium-polygonal-boomeramg-nodal/polygonal/diffusion_reports/trials.csv),
+and [nodal configuration](configs/medium_polygonal_boomeramg_nodal.json).
+
+The checked-in PolyDeal agglomeration experiment contains all 192 configured
+matrices across levels 3, 5, 8, and 10 with a Chebyshev-smoothed V-cycle. It is
+a backend comparison rather than a theta sweep because that hierarchy does not
+use BoomerAMG's strength threshold. See
+[the configuration](configs/medium_polygonal_chebyshev.json) and
+[its trial table](datasets/medium/polygonal-chebyshev/diffusion_reports/trials.csv).
+
+### Machine-learning pipeline
+
+The frozen `cnn_paper_v1` dataset contains 4,808 samples from simplex and
+polygonal **default BoomerAMG** measurements. The selected checkpoint trained
+on 4,098 samples, used 236 validation samples, and was evaluated once on 474
+held-out samples grouped by source-matrix hash. The locked test result is
+RMSE 0.0390, \(R^2=0.9907\), and mean selected-theta convergence-factor regret
+0.00513. Exact best-grid-point selection is 19.64%, so the model should be
+treated as an approximate convergence-ranking policy rather than an exact
+theta classifier.
+
+The current checkpoint was not trained on nodal BoomerAMG or the explicit
+PolyDeal hierarchy; mixing those records into this model version would assign
+different convergence targets to the same matrix and theta. The end-to-end
+inference bridge has nevertheless been exercised successfully on supported
+simplex and polygonal default-BoomerAMG smoke cases. See the
+[training report](reports/ml_phase_3_training_report.md),
+[locked test report](reports/ml_phase_4_test_report.md), and
+[inference integration report](reports/ml_phase_5_inference_amg_report.md).
+
 ## End-to-end workflow
 
 Run the following steps from the repository root. The examples use
@@ -139,6 +239,8 @@ The C++ code requires:
 - deal.II 9.7 or newer, built with PETSc and HYPRE support.
 - PolyDeal built against the same deal.II installation when polygonal
   experiments are required.
+- Trilinos support in deal.II when building the polygonal driver; the explicit
+  agglomeration backend stores its hierarchy in Trilinos sparse matrices.
 
 The Python code uses Python 3.10 or newer. Create an environment containing the
 numerical, learning, and plotting dependencies:
@@ -147,7 +249,8 @@ numerical, learning, and plotting dependencies:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install numpy scipy torch pandas matplotlib seaborn statsmodels
+python -m pip install numpy scipy torch pandas matplotlib seaborn statsmodels \
+  scikit-learn
 ```
 
 `pdflatex` and PGFPlots are optional. They are needed only for PDF figure
@@ -173,7 +276,7 @@ simplex problems and `meshaware_diffusion_polydeal` for polygonal problems.
 If only deal.II is available, disable the polygonal driver with
 `-DMESHAWARE_BUILD_POLYDEAL=OFF`.
 
-BoomerAMG supports three symmetric smoother choices through the shared solver
+BoomerAMG supports four smoother selections through the shared solver
 interface. The default preserves HYPRE's symmetric SOR/Jacobi relaxation:
 
 ```bash
@@ -195,7 +298,45 @@ interface. The default preserves HYPRE's symmetric SOR/Jacobi relaxation:
 
 For experiment sweeps, set `amg_smoother` and `jacobi_damping` in the JSON
 configuration. Trial records retain both the smoother name and its effective
-relaxation weight.
+relaxation weight. BoomerAMG additionally accepts
+`l1-symmetric-gauss-seidel`; it is not available in the explicit PolyDeal
+backend and is intentionally rejected by the polygonal nodal profile.
+
+Run the block-aware algebraic profile directly with:
+
+```bash
+./build-unified/meshaware_diffusion_polydeal \
+  --mesh-family polygonal --level 8 --epsilon 7 \
+  --pattern checkerboard_4x4 --theta 0.7044444444444445 \
+  --amg-backend boomeramg \
+  --boomeramg-profile polygonal-nodal \
+  --amg-smoother symmetric-gauss-seidel
+```
+
+This remains PETSc CG preconditioned by HYPRE BoomerAMG. The profile changes
+how BoomerAMG constructs its algebraic hierarchy; it does not replace AMG with
+a geometric solver.
+
+The polygonal driver also provides PolyDeal's agglomeration multigrid
+hierarchy:
+
+```bash
+./build-unified/meshaware_diffusion_polydeal \
+  --mesh-family polygonal --level 6 --epsilon 7 \
+  --pattern checkerboard_4x4 \
+  --amg-backend polydeal-agglomeration
+```
+
+This backend keeps the existing L-shaped polygons as its finest level, merges
+nested neighboring polygons without crossing the common 4-by-4 coefficient
+tile boundaries, constructs Galerkin coarse operators, and applies a
+configurable smoothed V-cycle. It accepts the same `--amg-smoother` choices:
+Chebyshev, damped Jacobi, and symmetric Gauss-Seidel (implemented by the
+Trilinos SSOR preconditioner). The polygonal experiment configurations use
+Chebyshev by default. Set
+`"amg_backend": "polydeal-agglomeration"` in a polygonal-only experiment
+configuration. `theta` is retained in records for schema compatibility but is
+not used by this backend.
 
 ### 3. Run a cross-family smoke experiment
 
@@ -241,6 +382,45 @@ python scripts/check_convergence.py \
 Do not start a large parameter sweep until the solver tests and convergence
 checks pass on the target machine.
 
+For the polygonal SIPG matrix, test the block-aware BoomerAMG profile before
+starting the medium sweep:
+
+```bash
+python scripts/run_experiments.py \
+  --config configs/polygonal_boomeramg_nodal_pilot.json \
+  --build-dir build-unified \
+  --output-root datasets
+```
+
+The pilot groups the three modal `FE_AggloDGP(1)` unknowns belonging to each
+polygon, supplies the projected constant mode as near-nullspace information,
+and uses HYPRE nodal coarsening with HMIS and extended+i interpolation. It
+records grid and operator complexity alongside the usual convergence and
+timing metrics. Compare those results with the matching cases in
+`datasets/medium/polygonal/`.
+
+The profile has also been promoted to the full medium polygonal grid:
+
+```bash
+python scripts/run_experiments.py \
+  --config configs/medium_polygonal_boomeramg_nodal.json \
+  --build-dir build-unified \
+  --output-root datasets
+```
+
+Run the one-solve-per-matrix PolyDeal agglomeration comparison with:
+
+```bash
+python scripts/run_experiments.py \
+  --config configs/medium_polygonal_chebyshev.json \
+  --build-dir build-unified \
+  --output-root datasets/medium
+```
+
+The second command reproduces the checked-in
+`datasets/medium/polygonal-chebyshev/` layout because that single-family
+configuration intentionally uses a flat output directory.
+
 ### 5. Estimate storage and inspect an experiment
 
 The [small](configs/small.json), [medium](configs/medium.json), and
@@ -268,6 +448,11 @@ python scripts/storage_preflight.py \
 
 Run the same preflight with `configs/medium.json` or `configs/large.json`
 before selecting a larger tier.
+
+These cross-family tiers inherit `boomeramg_profile: default` from
+[configs/common.json](configs/common.json), so their polygonal records are the
+scalar-BoomerAMG baseline. Use the dedicated nodal configuration above when a
+block-aware polygonal BoomerAMG sweep is intended.
 
 ### 6. Generate a numerical dataset
 
@@ -313,8 +498,9 @@ outputs do not require the TeX backend.
 ### 8. Build the ANN dataset
 
 Finish or stop numerical generation before freezing an ML snapshot. The
-current model is trained only on simplex and polygonal matrices; quadrilateral
-matrices are intentionally excluded.
+current model is trained only on simplex and polygonal default-BoomerAMG
+records; quadrilateral, polygonal-nodal, and PolyDeal-agglomeration records are
+intentionally excluded.
 
 Build pooled matrix views, preserve leakage-safe split assignments, and create
 the canonical sample index:
@@ -331,7 +517,11 @@ python scripts/build_ml_pipeline.py \
 ```
 
 To reproduce the broader paper dataset, repeat `--tier` for both `small` and
-`medium`. Reruns reuse features identified by their source checksum and retain
+`medium`. Do not add nodal or explicit-agglomeration records to
+`cnn_paper_v1`: preconditioner choice changes the measured convergence target
+even when the sparse matrix and theta are identical. A model that combines
+those solvers needs an explicit backend/profile input and a new dataset/model
+version. Reruns reuse features identified by their source checksum and retain
 existing train, validation, and test assignments. Use `--reset-splits` only
 when intentionally creating a new split version.
 
@@ -407,7 +597,9 @@ python scripts/run_predicted_amg.py \
   --theta-values 0.2,0.4,0.6
 ```
 
-Use `--mesh-family polygonal` for the PolyDeal path. The output directory
+Use `--mesh-family polygonal` for the PolyDeal discretization with the default
+BoomerAMG profile. The current inference command does not select or model the
+polygonal-nodal or explicit-agglomeration preconditioners. The output directory
 contains the operator, recommendation, solver record, workflow manifest, and
 SHA-256 lock. Repeating an identical invocation verifies and reuses the locked
 artifacts; it does not silently overwrite them.

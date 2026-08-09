@@ -92,6 +92,15 @@ def command_for(
         "--matrix",
         str(matrix_path),
     ]
+    if trial["mesh_family"] == "polygonal":
+        command.extend(
+            [
+                "--amg-backend",
+                config.amg_backend,
+                "--boomeramg-profile",
+                config.boomeramg_profile,
+            ]
+        )
     if not write_matrix:
         command.append("--skip-matrix-write")
     return command
@@ -151,6 +160,15 @@ def command_for_batch(
         "--matrix",
         str(matrix_path),
     ]
+    if representative["mesh_family"] == "polygonal":
+        command.extend(
+            [
+                "--amg-backend",
+                config.amg_backend,
+                "--boomeramg-profile",
+                config.boomeramg_profile,
+            ]
+        )
     if not write_matrix:
         command.append("--skip-matrix-write")
     if skip_existing_records:
@@ -171,6 +189,14 @@ def require_executable(build_dir: Path, family: str) -> Path:
             f"Missing executable {executable}. Configure/build with deal.II first."
         )
     return executable
+
+
+def output_root_for_family(
+    config: ExperimentConfig, experiment_root: Path, family: str
+) -> Path:
+    if config.family_subdirectories:
+        return experiment_root / family
+    return experiment_root
 
 
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -284,7 +310,7 @@ def run_single_trials(
     for index, trial in enumerate(trials, start=1):
         family = trial["mesh_family"]
         executable = require_executable(args.build_dir, family)
-        family_root = experiment_root / family
+        family_root = output_root_for_family(config, experiment_root, family)
         current_matrix_id = matrix_id(trial, config.high_region)
         matrix_path = family_root / "matrices" / f"{current_matrix_id}.petsc"
         npz_path = family_root / "matrices" / f"{current_matrix_id}.npz"
@@ -355,7 +381,7 @@ def run_matrix_batches(
         representative = group[0]
         family = representative["mesh_family"]
         executable = require_executable(args.build_dir, family)
-        family_root = experiment_root / family
+        family_root = output_root_for_family(config, experiment_root, family)
         record_directory = family_root / "records"
         matrix_path = family_root / "matrices" / f"{current_matrix_id}.petsc"
         npz_path = family_root / "matrices" / f"{current_matrix_id}.npz"
@@ -505,6 +531,13 @@ def main() -> None:
                     "matrix_count": len(groups),
                     "execution_mode": execution_mode,
                     "matrix_format": config.matrix_format,
+                    "experiment_root": str(experiment_root),
+                    "family_output_roots": {
+                        family: str(
+                            output_root_for_family(config, experiment_root, family)
+                        )
+                        for family in sorted(selected)
+                    },
                     "first_trial": trials[0] if trials else None,
                 },
                 indent=2,
@@ -547,7 +580,9 @@ def main() -> None:
 
     report_records = 0
     for family in sorted(selected):
-        report_records += build_family_reports(experiment_root / family, config.name)
+        report_records += build_family_reports(
+            output_root_for_family(config, experiment_root, family), config.name
+        )
     print(
         f"done: completed={completed}, skipped={skipped}, "
         f"reported={report_records}, records={experiment_root}"
