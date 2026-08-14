@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Predict convergence factors and recommend a BoomerAMG strong "
-            "threshold for one finalized MeshAware CSR matrix."
+            "threshold for one finalized AMG-ThetaNet CSR matrix."
         )
     )
     parser.add_argument("--matrix", type=Path, required=True)

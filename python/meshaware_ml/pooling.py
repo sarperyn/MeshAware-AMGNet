@@ -172,7 +172,7 @@ def load_and_pool_csr_npz(
     matrix_path: str | Path,
     spec: PoolingSpec = PAPER_POOLING_SPEC,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Validate and pool one MeshAware CSR NPZ in a single archive pass."""
+    """Validate and pool one AMG-ThetaNet CSR NPZ in a single archive pass."""
 
     matrix_path = Path(matrix_path)
     with np.load(matrix_path, allow_pickle=False) as archive:

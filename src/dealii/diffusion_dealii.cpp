@@ -568,7 +568,7 @@ int main(int argc, char **argv) {
 
     // PETSc parses argv during initialization. Pass only the program name
     // because all application options above are handled by this executable.
-    // This avoids PETSc reporting valid MeshAware options as unused.
+    // This avoids PETSc reporting valid application options as unused.
     int initialization_argc = 1;
     char *initialization_arguments[] = {argv[0], nullptr};
     char **initialization_argv = initialization_arguments;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MeshAwareAMG VERSION 0.1.0 LANGUAGES CXX)
+project(AMGThetaNet VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 

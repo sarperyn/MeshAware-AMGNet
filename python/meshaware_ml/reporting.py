@@ -143,7 +143,7 @@ def build_audit_and_report(
     write_json_atomic(audit_path, audit)
 
     lines = [
-        "# MeshAware-AMG ML Phase 1–2 Report",
+        "# AMG-ThetaNet ML Phase 1–2 Report",
         "",
         f"Generated: `{audit['created_at_utc']}`",
         "",

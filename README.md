@@ -1,13 +1,13 @@
-# MeshAware-AMGNet
+# AMG-ThetaNet
 
-MeshAware-AMGNet studies how algebraic multigrid performance depends on the
-mesh and on the strong-connection threshold $\theta$ for heterogeneous
-diffusion problems. C++ drivers built on deal.II assemble the model problem
-$-\nabla\cdot(\mu(x,y)\nabla u) = f$ on $\Omega = (-1,1)^2$ over quadrilateral,
-conforming simplex, simplex discontinuous-Galerkin, and polygonal
-discretizations, solve the resulting systems with preconditioned conjugate
-gradients, and record per-trial convergence and timing data together with the
-sparse operator.
+AMG-ThetaNet selects the HYPRE BoomerAMG strong-connection threshold $\theta$
+for heterogeneous diffusion problems, and measures how that choice interacts
+with the finite-element mesh. C++ drivers built on deal.II assemble the model
+problem $-\nabla\cdot(\mu(x,y)\nabla u) = f$ on $\Omega = (-1,1)^2$ over
+quadrilateral, conforming simplex, simplex discontinuous-Galerkin, and
+polygonal discretizations, solve the resulting systems with preconditioned
+conjugate gradients, and record per-trial convergence and timing data together
+with the sparse operator.
 
 A Python pipeline turns those artifacts into a supervised learning problem: a
 convolutional regression model consumes a fixed-size pooled view of the sparse
@@ -38,7 +38,7 @@ Finite-element assembly and solves (C++):
 | --- | --- | --- | --- |
 | `meshaware_diffusion_dealii` | `quadrilateral`, `simplex` | $Q_1$ / $P_1$ continuous Lagrange | BoomerAMG (default profile) |
 | `meshaware_diffusion_simplex_dg` | `simplex-dg` | $P_1$ symmetric interior-penalty DG | BoomerAMG (default profile) |
-| `meshaware_diffusion_polydeal` *(optional)* | `polygonal` | degree-1 modal DG on agglomerated polygons (`FE_AggloDGP`) | BoomerAMG (`default` or `polygonal-nodal` profile), or explicit PolyDeal agglomeration multigrid |
+| `meshaware_diffusion_polydeal`| `polygonal` | degree-1 modal DG on agglomerated polygons (`FE_AggloDGP`) | BoomerAMG (`default` or `polygonal-nodal` profile), or explicit PolyDeal agglomeration multigrid |
 
 Common to all drivers:
 
@@ -100,7 +100,7 @@ Configuration-driven sweeps and ML (Python):
 | PETSc | Yes | deal.II **must** be configured with PETSc support — CMake raises `FATAL_ERROR` when `DEAL_II_WITH_PETSC` is off. All linear algebra in [src/common/petsc_amg.cpp](src/common/petsc_amg.cpp) uses `KSP`/`PC`. | [petsc.org install](https://petsc.org/release/install/) |
 | HYPRE (BoomerAMG) | Yes | The solver sets `PCHYPRE` + `PCHYPRESetType("boomeramg")`, so the PETSc build must include HYPRE (`--download-hypre` or `--with-hypre`). | [HYPRE docs](https://hypre.readthedocs.io/en/latest/) |
 
-### Optional polygonal / PolyDeal dependencies
+### polygonal / PolyDeal dependencies
 
 Required only when building `meshaware_diffusion_polydeal`
 (`MESHAWARE_BUILD_POLYDEAL=ON`, the default, plus a valid `POLYDEAL_ROOT`).
@@ -113,24 +113,9 @@ Required only when building `meshaware_diffusion_polydeal`
 
 ### Python dependencies
 
-The repository ships no `requirements.txt`, `pyproject.toml`, or other package
-metadata, and pins no versions. Install the packages below into a Python
-environment of your choice; the list is derived from the imports in
-[python/](python/) and [scripts/](scripts/).
 
-Python **3.10 or newer** is required (the code uses `zip(..., strict=True)`).
+Python **3.10 or newer** is required
 
-| Package | Mandatory | Used by | Reference |
-| --- | --- | --- | --- |
-| NumPy | Yes | Matrix conversion, pooling, indexing, metrics | [numpy.org](https://numpy.org/install/) |
-| PyTorch | Yes, for the ANN workflow | Model, datasets, training, inference | [pytorch.org](https://pytorch.org/get-started/locally/) |
-| SciPy | Yes | `load_scipy_csr_npz`, and the environment stamp written into the pipeline report | [scipy.org](https://scipy.org/install/) |
-| scikit-learn | Yes, for `build_ml_pipeline.py` | Version stamp recorded in the generated audit/report | [scikit-learn.org](https://scikit-learn.org/stable/install.html) |
-| Matplotlib | Optional | Evaluation plots (`output.plots` in the evaluation config) and the figure scripts | [matplotlib.org](https://matplotlib.org/stable/users/installing/index.html) |
-| pandas, seaborn, statsmodels | Optional | Only [scripts/generate_theta_vs_nlevels_plot.py](scripts/generate_theta_vs_nlevels_plot.py) | [pandas](https://pandas.pydata.org/) · [seaborn](https://seaborn.pydata.org/) · [statsmodels](https://www.statsmodels.org/) |
-
-`git` must be on `PATH` when running `build_ml_pipeline.py`: the report records
-the repository revision via `git rev-parse`.
 
 Example setup (adjust the PyTorch install command for your platform and
 accelerator using the official selector):
@@ -148,8 +133,8 @@ the repository root.
 ## Clone and build
 
 ```bash
-git clone https://github.com/sarperyn/MeshAware-AMGNet.git
-cd MeshAware-AMGNet
+git clone https://github.com/sarperyn/AMG-ThetaNet.git
+cd AMG-ThetaNet
 ```
 
 Configure. `DEAL_II_DIR` must point at the directory containing
@@ -306,7 +291,23 @@ factor measured by the solver. One matrix view therefore serves every $\theta$
 sample for that matrix, and $\theta$ is selected at inference by evaluating the
 model over a candidate grid and taking the argmin of the predicted $\rho$.
 
-Only `simplex` and `polygonal` data are supported by the ML pipeline.
+The pipeline accepts only `simplex` and `polygonal` data, enforced in the
+dataset validator, the snapshot capture, the inference guards, and both CLIs.
+This is the scope of the frozen `paper_v1` dataset rather than a missing
+feature:
+
+- **Quadrilateral is held out deliberately.** The medium sweep does generate
+  quadrilateral operators; they are kept out of training so they can serve as
+  the unseen-discretization probe — train on simplex and polygonal, test on
+  quadrilateral — which asks whether the model generalizes across
+  discretizations or merely recognizes families it has already seen.
+- **`simplex-dg` postdates the frozen dataset.** Its records land in a separate
+  tier (`datasets/medium-simplex-dg`, flat layout), which `--tier
+  {small,medium}` does not reach.
+- **Nodal-BoomerAMG and PolyDeal-agglomeration records are excluded** because
+  the preconditioner changes the measured $\rho$ for an identical
+  $(\text{matrix}, \theta)$ pair. Combining them would require an explicit
+  backend input and a new dataset and model version.
 
 ### A. Generate numerical data
 
@@ -594,7 +595,7 @@ This work reproduces and extends the heterogeneous diffusion experiment of:
 > arXiv:[2111.01629](https://arxiv.org/abs/2111.01629),
 > DOI [10.1007/s10013-022-00597-w](https://doi.org/10.1007/s10013-022-00597-w)
 
-The optional polygonal driver builds on PolyDeal, whose authors ask that you
+The polygonal driver builds on PolyDeal, whose authors ask that you
 cite:
 
 > M. Feder, A. Cangiani, L. Heltai. *R3MG: R-tree based agglomeration of

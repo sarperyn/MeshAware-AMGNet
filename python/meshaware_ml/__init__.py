@@ -1,4 +1,4 @@
-"""Machine-learning feature and dataset helpers for MeshAware-AMG."""
+"""Machine-learning feature and dataset helpers for AMG-ThetaNet."""
 
 from .pooling import (
     FEATURE_SCHEMA_VERSION,
