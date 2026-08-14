@@ -50,8 +50,8 @@ class PaperCNNConfig:
         return asdict(self)
 
 
-class PaperRhoCNN(nn.Module):
-    """Paper-selected CNN with mesh scale and theta conditioning."""
+class ConditionedMatrixCNN(nn.Module):
+    """Paper-selected matrix CNN with scalar conditioning."""
 
     def __init__(self, config: PaperCNNConfig | None = None):
         super().__init__()
@@ -151,3 +151,9 @@ class PaperRhoCNN(nn.Module):
         conditioned = torch.cat((embedding, scalars), dim=1)
         hidden = self.conditioned_dense(conditioned)
         return self.output(hidden).squeeze(1)
+
+
+# The existing convergence-factor pipeline imports this public name. Keeping
+# the alias preserves its checkpoints and API while the epsilon experiments use
+# the objective-neutral class name.
+PaperRhoCNN = ConditionedMatrixCNN

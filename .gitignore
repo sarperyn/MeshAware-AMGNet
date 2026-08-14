@@ -8,7 +8,9 @@
 /docs
 /reports
 /experiments
+/tests
 /presentation
+/report
 
 .DS_Store
 /.claude

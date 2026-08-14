@@ -29,6 +29,43 @@ class PetscMatrixHeader:
     expected_file_bytes: int
 
 
+def read_csr_npz_identity(path: str | Path) -> dict[str, Any]:
+    """Read identity metadata without loading the large CSR arrays."""
+
+    np = _require_numpy()
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as archive:
+        required = {"schema_version", "shape", "source_sha256", "identity_json"}
+        missing = required.difference(archive.files)
+        if missing:
+            raise ValueError(f"Missing arrays in CSR NPZ {path}: {sorted(missing)}")
+        schema_version = int(archive["schema_version"])
+        if schema_version != CSR_NPZ_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported CSR NPZ schema {schema_version} in {path}"
+            )
+        shape_array = archive["shape"]
+        if shape_array.shape != (2,):
+            raise ValueError(f"Invalid matrix shape in {path}")
+        shape = [int(value) for value in shape_array]
+        source_sha256 = bytes(archive["source_sha256"]).decode("ascii")
+        identity = json.loads(bytes(archive["identity_json"]).decode("utf-8"))
+
+    if len(source_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in source_sha256
+    ):
+        raise ValueError(f"Invalid source checksum in {path}")
+    if not isinstance(identity, dict):
+        raise TypeError(f"Invalid matrix identity in {path}")
+    return {
+        "schema_version": schema_version,
+        "source_sha256": source_sha256,
+        "identity": identity,
+        "shape": shape,
+        "path": str(path),
+    }
+
+
 def _source_integer_dtype(header: PetscMatrixHeader) -> str:
     prefix = ">" if header.byte_order == "big" else "<"
     return f"{prefix}i{header.integer_bytes}"

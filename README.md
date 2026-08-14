@@ -1,584 +1,400 @@
-# MeshAware-AMG
+# MeshAware-AMGNet
 
-Reproducible finite-element experiments for heterogeneous diffusion,
-polygon-aware multigrid preconditioners, and machine-learning tools for
-selecting the HYPRE BoomerAMG strong-threshold parameter.
+MeshAware-AMGNet studies how algebraic multigrid performance depends on the
+mesh and on the strong-connection threshold $\theta$ for heterogeneous
+diffusion problems. C++ drivers built on deal.II assemble the model problem
+$-\nabla\cdot(\mu(x,y)\nabla u) = f$ on $\Omega = (-1,1)^2$ over quadrilateral,
+conforming simplex, simplex discontinuous-Galerkin, and polygonal
+discretizations, solve the resulting systems with preconditioned conjugate
+gradients, and record per-trial convergence and timing data together with the
+sparse operator.
 
-## Overview
+A Python pipeline turns those artifacts into a supervised learning problem: a
+convolutional regression model consumes a fixed-size pooled view of the sparse
+matrix conditioned on $(h, \theta)$ and predicts the residual-based convergence
+factor $\rho$. Minimizing the predicted $\rho$ over a candidate grid yields a
+recommended HYPRE BoomerAMG strong threshold, which can then be fed straight
+back into the solver. The experimental design follows
+[*Accelerating Algebraic Multigrid Methods via Artificial Neural
+Networks*](https://arxiv.org/abs/2111.01629).
 
-MeshAware-AMG studies how the strong-connection threshold \(\theta\) affects
-algebraic multigrid performance for finite-element systems with discontinuous
-diffusion coefficients. It reproduces and extends the heterogeneous diffusion
-experiment from [*Accelerating Algebraic Multigrid Methods via Artificial
-Neural Networks*](https://arxiv.org/abs/2111.01629).
+## Contents
 
-The model problem is
+- [Capabilities](#capabilities)
+- [Dependencies](#dependencies)
+- [Clone and build](#clone-and-build)
+- [Numerical experiment: medium sweep](#numerical-experiment-medium-sweep)
+- [ANN workflow](#ann-workflow)
+- [Configuration guide](#configuration-guide)
+- [Repository structure](#repository-structure)
+- [Scientific outputs and reproducibility](#scientific-outputs-and-reproducibility)
+- [Citation and license](#citation-and-license)
 
-\[
--\nabla \cdot \left(\mu(x,y)\nabla u\right)=f
-\qquad \text{in } \Omega=(-1,1)^2.
-\]
+## Capabilities
 
-The repository covers four coefficient patterns, twelve coefficient contrasts,
-multiple refinement levels, and four mesh families:
+Finite-element assembly and solves (C++):
 
-- Quadrilateral Q1 elements.
-- Simplex P1 elements.
-- Simplex P1 symmetric interior-penalty discontinuous Galerkin elements.
-- Polygonal symmetric interior-penalty discontinuous Galerkin elements.
+| Driver | Mesh families | Discretization | AMG backends |
+| --- | --- | --- | --- |
+| `meshaware_diffusion_dealii` | `quadrilateral`, `simplex` | $Q_1$ / $P_1$ continuous Lagrange | BoomerAMG (default profile) |
+| `meshaware_diffusion_simplex_dg` | `simplex-dg` | $P_1$ symmetric interior-penalty DG | BoomerAMG (default profile) |
+| `meshaware_diffusion_polydeal` *(optional)* | `polygonal` | degree-1 modal DG on agglomerated polygons (`FE_AggloDGP`) | BoomerAMG (`default` or `polygonal-nodal` profile), or explicit PolyDeal agglomeration multigrid |
 
-The C++ solvers assemble finite-element operators and run conjugate gradient
-with a multigrid preconditioner. Quadrilateral and simplex systems use HYPRE
-BoomerAMG. Polygonal systems can use default scalar BoomerAMG, a block-aware
-nodal BoomerAMG profile, or an explicit PolyDeal agglomeration hierarchy. The
-Python pipeline manages experiments, validates and stores sparse matrices,
-produces statistical reports, trains a convolutional model, and evaluates
-model-selected BoomerAMG parameters.
+Common to all drivers:
 
-## Scientific scope
+- Four coefficient patterns (`vertical_split`, `checkerboard_2x2`,
+  `vertical_stripes_4`, `checkerboard_4x4`) with contrast $10^{\varepsilon}$
+  applied to the `white` or `gray` region.
+- Preconditioned CG with configurable relative/absolute tolerances and
+  iteration cap; four relaxation choices (`chebyshev`, `damped-jacobi`,
+  `l1-symmetric-gauss-seidel`, `symmetric-gauss-seidel`).
+- Batched execution over a $\theta$ grid for one assembled operator
+  (`--theta-values`, `--repeats`, `--warmup-runs`), plus assembly-only export
+  (`--assemble-only`).
+- JSON trial records with separated assembly / AMG-setup / solve timings, CG
+  iteration counts, AMG level and complexity data, discretization error norms,
+  and the residual-based convergence factor.
+- PETSc binary matrix export, converted to compressed SciPy CSR `.npz` by the
+  experiment runner.
 
-The quadrilateral, conforming simplex, and simplex DG implementations in
-[src/dealii/](src/dealii/) use [deal.II](https://dealii.org/). The polygonal implementation in
-[src/polydeal/](src/polydeal/) uses
-[PolyDeal](https://github.com/fdrmrc/Polydeal) and a symmetric interior-penalty
-discontinuous Galerkin formulation.
+Only the polygonal driver exposes `--amg-backend` and `--boomeramg-profile`.
+The `polygonal-nodal` BoomerAMG profile enables HYPRE nodal coarsening with a
+near-nullspace and is restricted to polygonal-only experiments; the
+`polydeal-agglomeration` backend builds an explicit nested polygon
+agglomeration hierarchy instead of BoomerAMG and ignores $\theta$ (the value is
+still recorded). The polygonal driver's `--oracle` mode additionally solves the
+native deal.II system directly and compares matrices, right-hand sides, and
+solutions; it is limited to `--level <= 6`.
 
-The BoomerAMG experiments use the same [PETSc](https://petsc.org/)
-conjugate-gradient and
-[HYPRE BoomerAMG](https://hypre.readthedocs.io/en/latest/solvers-boomeramg.html)
-measurement path. This keeps solver configuration, residual handling, timing
-boundaries, and output records consistent across discretizations. The explicit
-PolyDeal hierarchy uses deal.II CG with Trilinos matrices but follows the same
-residual, timing, and record contract.
+Configuration-driven sweeps and ML (Python):
 
-The manufactured cosine solution supplies the forcing term and the full
-Dirichlet trace. At \(\epsilon=0\), the coefficient is uniform and the problem
-becomes the Poisson baseline. For heterogeneous cases, \(\mu\) takes the values
-\(1\) and \(10^\epsilon\). The selected high-coefficient region is recorded
-explicitly because the reference paper contains two conflicting color
-conventions.
+- Expansion of a versioned JSON experiment grid into trials grouped by matrix
+  identity, one solver invocation per matrix, with resume support.
+- Per-family CSV reports and optimal-$\theta$ summaries.
+- Leakage-safe ML index construction: frozen dataset snapshots, pooled
+  fixed-size matrix views, and grouped stratified train/validation/test splits
+  keyed by matrix content checksum.
+- CNN training for convergence-factor regression, with deterministic seeding,
+  early stopping, and exact resume from the last checkpoint.
+- Locked held-out evaluation reporting regression metrics, grouped bootstrap
+  confidence intervals, and $\theta$-selection decision quality.
+- Single-matrix inference producing a recommended $\theta$, and an end-to-end
+  workflow that assembles, predicts, solves, and compares predicted against
+  measured $\rho$.
 
-## Solver and preconditioner variants
+## Dependencies
 
-The repository currently implements the following solver paths:
+### Core build tools
 
-| Discretization | Preconditioner | Selection | Hierarchy construction |
-|---|---|---|---|
-| Quadrilateral Q1 or simplex P1 | HYPRE BoomerAMG | Default | Scalar algebraic strength, coarsening, and interpolation |
-| Polygonal SIPG | HYPRE BoomerAMG | `--amg-backend boomeramg --boomeramg-profile default` | Scalar algebraic hierarchy |
-| Polygonal SIPG | HYPRE nodal BoomerAMG | `--amg-backend boomeramg --boomeramg-profile polygonal-nodal` | Block-aware algebraic hierarchy using one three-DoF node per polygon |
-| Polygonal SIPG | PolyDeal agglomeration multigrid | `--amg-backend polydeal-agglomeration` | Explicit nested polygon agglomerates and Galerkin coarse operators |
+| Requirement | Mandatory | Why | Reference |
+| --- | --- | --- | --- |
+| C++17 compiler | Yes | `meshaware_core` requests `cxx_std_17` | — |
+| CMake ≥ 3.20 | Yes | Enforced by `cmake_minimum_required` in [CMakeLists.txt](CMakeLists.txt) | [cmake.org](https://cmake.org/download/) |
+| MPI | Yes | All three drivers construct `Utilities::MPI::MPI_InitFinalize` at start-up, and deal.II/PETSc are linked through it. Runs are single-rank. | [Open MPI](https://www.open-mpi.org/) / [MPICH](https://www.mpich.org/) |
 
-The `polygonal-nodal` option is still an **algebraic multigrid
-preconditioner**. It does not construct a geometric mesh hierarchy. It gives
-BoomerAMG finite-element metadata that the scalar matrix graph does not
-contain: the three modal `FE_AggloDGP(1)` coefficients on one polygon form a
-block, and the projected constant function is a near-nullspace mode. HYPRE
-then builds the hierarchy algebraically using nodal coarsening, HMIS, and
-extended+i interpolation.
+### Required C++ scientific libraries
 
-The explicit `polydeal-agglomeration` backend is a separate implementation. It
-merges neighboring polygons without crossing the common coefficient-tile
-boundaries, builds modal transfer operators and Galerkin level matrices, uses
-a direct coarse solve, and applies a symmetric V-cycle preconditioner to CG.
-The BoomerAMG strength threshold `theta` does not apply to this backend.
+| Requirement | Mandatory | Why | Reference |
+| --- | --- | --- | --- |
+| deal.II ≥ 9.7 | Yes, for every driver | `find_package(deal.II 9.7)`; provides meshes, elements, quadrature, and the PETSc wrappers. If it is not found, all C++ targets are skipped and only the Python tooling is usable. | [dealii.org](https://www.dealii.org/) · [install guide](https://www.dealii.org/current/readme.html) |
+| PETSc | Yes | deal.II **must** be configured with PETSc support — CMake raises `FATAL_ERROR` when `DEAL_II_WITH_PETSC` is off. All linear algebra in [src/common/petsc_amg.cpp](src/common/petsc_amg.cpp) uses `KSP`/`PC`. | [petsc.org install](https://petsc.org/release/install/) |
+| HYPRE (BoomerAMG) | Yes | The solver sets `PCHYPRE` + `PCHYPRESetType("boomeramg")`, so the PETSc build must include HYPRE (`--download-hypre` or `--with-hypre`). | [HYPRE docs](https://hypre.readthedocs.io/en/latest/) |
 
-## Techniques worth studying
+### Optional polygonal / PolyDeal dependencies
 
-- **Shared mathematical definitions.** Coefficient fields, exact solutions,
-  gradients, and forcing terms are defined once in
-  [include/meshaware/](include/meshaware/). Both finite-element drivers use the
-  same definitions.
+Required only when building `meshaware_diffusion_polydeal`
+(`MESHAWARE_BUILD_POLYDEAL=ON`, the default, plus a valid `POLYDEAL_ROOT`).
 
-- **Comparable conforming and polygonal discretizations.** Quadrilateral Q1
-  and simplex P1 systems share one deal.II driver. The PolyDeal path uses SIPG
-  with one-sided diffusion values and a coefficient-scaled penalty.
+| Requirement | Why | Reference |
+| --- | --- | --- |
+| PolyDeal | Supplies `agglomeration_handler.h` and the `polydeal` library. CMake searches `${POLYDEAL_ROOT}/include` and `${POLYDEAL_ROOT}/build-unified/source` or `${POLYDEAL_ROOT}/build/source`. If either is missing, the polygonal target is skipped with a status message and the rest of the build proceeds. | [github.com/fdrmrc/Polydeal](https://github.com/fdrmrc/Polydeal) |
+| Trilinos | The PolyDeal agglomeration multigrid backend requires deal.II built with Trilinos; CMake raises `FATAL_ERROR` when `DEAL_II_WITH_TRILINOS` is off. | [trilinos.github.io](https://trilinos.github.io/) |
+| SuiteSparse / UMFPACK | Used by the polygonal driver's `--oracle` validation path, which calls `SparseDirectUMFPACK` to produce a reference direct solution. Not needed for ordinary solves. | [SuiteSparse](https://people.engr.tamu.edu/davis/suitesparse.html) |
 
-- **Interface-aligned polygonal meshes.** Deterministic L-shaped polyominoes
-  are constructed inside a common \(4\times4\) tile layout. No polygon crosses
-  a possible coefficient discontinuity, and geometry remains fixed when the
-  coefficient pattern changes.
+### Python dependencies
 
-- **Block-aware algebraic multigrid for polygonal DG.** The nodal BoomerAMG
-  profile groups the three degree-one modal unknowns on each polygon and
-  supplies the correctly projected constant mode. This prevents scalar
-  coarsening from splitting a physical polygon and improves the coarse
-  representation of low-energy error.
+The repository ships no `requirements.txt`, `pyproject.toml`, or other package
+metadata, and pins no versions. Install the packages below into a Python
+environment of your choice; the list is derived from the imports in
+[python/](python/) and [scripts/](scripts/).
 
-- **Explicit polygon agglomeration hierarchy.** The alternative PolyDeal
-  backend recursively merges polygons inside coefficient tiles, constructs
-  exact modal injection operators, obtains coarse matrices by Galerkin
-  projection, and applies configurable five-step smoothers in a V-cycle.
+Python **3.10 or newer** is required (the code uses `zip(..., strict=True)`).
 
-- **Independent solver timings.** Assembly, AMG hierarchy construction, and
-  iterative solution are measured separately. Calling `KSPSetUp` before
-  `KSPSolve` prevents lazy preconditioner construction from entering the solve
-  interval.
+| Package | Mandatory | Used by | Reference |
+| --- | --- | --- | --- |
+| NumPy | Yes | Matrix conversion, pooling, indexing, metrics | [numpy.org](https://numpy.org/install/) |
+| PyTorch | Yes, for the ANN workflow | Model, datasets, training, inference | [pytorch.org](https://pytorch.org/get-started/locally/) |
+| SciPy | Yes | `load_scipy_csr_npz`, and the environment stamp written into the pipeline report | [scipy.org](https://scipy.org/install/) |
+| scikit-learn | Yes, for `build_ml_pipeline.py` | Version stamp recorded in the generated audit/report | [scikit-learn.org](https://scikit-learn.org/stable/install.html) |
+| Matplotlib | Optional | Evaluation plots (`output.plots` in the evaluation config) and the figure scripts | [matplotlib.org](https://matplotlib.org/stable/users/installing/index.html) |
+| pandas, seaborn, statsmodels | Optional | Only [scripts/generate_theta_vs_nlevels_plot.py](scripts/generate_theta_vs_nlevels_plot.py) | [pandas](https://pandas.pydata.org/) · [seaborn](https://seaborn.pydata.org/) · [statsmodels](https://www.statsmodels.org/) |
 
-- **Assemble-once experiment batches.** Each matrix is assembled and exported
-  once. Every BoomerAMG threshold and timing repeat receives a fresh PETSc KSP
-  and hierarchy, including discarded warm-up runs. The explicit PolyDeal
-  backend similarly rebuilds its multigrid state for every timing run.
+`git` must be on `PATH` when running `build_ml_pipeline.py`: the report records
+the repository revision via `git rev-parse`.
 
-- **Residual-based convergence measurements.** The solver records the
-  unpreconditioned residual history and computes
-  \[
-  \rho=\left(\frac{\lVert r_N\rVert_2}{\lVert r_0\rVert_2}\right)^{1/N}.
-  \]
-  It also records hierarchy depth, grid complexity, operator complexity, and
-  the solver convergence reason.
-
-- **Independent polygonal correctness oracle.** Validation mode inserts the
-  same SIPG contributions into native and PETSc matrices, checks entrywise
-  agreement, verifies symmetry, and compares the iterative solution with
-  [SuiteSparse UMFPACK](https://github.com/DrTimothyAldenDavis/SuiteSparse).
-
-- **Bounded-memory sparse conversion.** The data layer in
-  [python/meshaware_data/](python/meshaware_data/) reads PETSc binary matrices
-  through [NumPy memory
-  mapping](https://numpy.org/doc/stable/reference/generated/numpy.memmap.html),
-  validates their structure in chunks, and converts them to compressed CSR NPZ
-  artifacts without densification.
-
-- **Transactional artifact publication.** Matrices, records, features,
-  checkpoints, and evaluation outputs are written to temporary paths,
-  validated, and atomically promoted. SHA-256 fingerprints connect derived
-  data to its exact source.
-
-- **Sparse matrix image pooling.** The learning pipeline in
-  [python/meshaware_ml/](python/meshaware_ml/) converts each sparse operator
-  into a three-channel \(100\times100\) view using positive maximum, negative
-  maximum, and sum reductions. Pooling operates directly on CSR arrays and
-  avoids a dense copy of the original matrix.
-
-- **Leakage-safe data partitions.** Samples derived from the same matrix
-  checksum stay in one train, validation, or test partition. Existing
-  assignments remain stable when new matrices are added.
-
-- **Conditioned convergence prediction.** A
-  [PyTorch](https://pytorch.org/) convolutional network combines the pooled
-  operator embedding with mesh scale and candidate \(\theta\), then predicts
-  the AMG convergence factor.
-
-- **Reproducible training and locked evaluation.** Training captures
-  random-number-generator state, supports exact checkpoint continuation, and
-  uses early stopping. Held-out evaluation includes stratified errors,
-  per-matrix threshold regret, and grouped-bootstrap confidence intervals.
-
-- **Multiple scientific figure backends.** Reporting code produces raster
-  figures with [Matplotlib](https://matplotlib.org/), publication-oriented TeX
-  with [PGFPlots](https://ctan.org/pkg/pgfplots), and direct
-  [SVG](https://developer.mozilla.org/en-US/docs/Web/SVG) output.
-
-## Current checked-in results
-
-### Polygonal multigrid experiments
-
-The original medium polygonal sweep exposed severe mesh-dependent iteration
-growth with scalar BoomerAMG. The difficult level-8, `checkerboard_4x4`,
-\(\epsilon=7\) cases required 2,232--2,703 CG iterations across the theta
-grid. With the nodal BoomerAMG profile, the same matrices require 116--278
-iterations. At the best observed nodal theta, the convergence factor falls
-from approximately 0.992 to 0.852.
-
-Across the 1,519 matching records currently available in both datasets, the
-median iteration count falls from 154 to 71, and 1,497 records improve. The
-level summary is:
-
-| Refinement | Scalar BoomerAMG median / maximum | Nodal BoomerAMG median / maximum |
-|---|---:|---:|
-| 3 | 62.5 / 254 | 46 / 207 |
-| 5 | 144 / 809 | 81.5 / 568 |
-| 8 | 308 / 2,703 | 98.5 / 776 |
-| 10, partial | 425 / 447 | 75 / 178 |
-
-Levels 3, 5, and 8 are complete in both compared sweeps; level 10 remains
-partial. These numbers measure the combined nodal profile, not an ablation of
-its individual HYPRE settings. See the
-[scalar trials](datasets/medium/polygonal/diffusion_reports/trials.csv),
-[nodal trials](datasets/medium-polygonal-boomeramg-nodal/polygonal/diffusion_reports/trials.csv),
-and [nodal configuration](configs/medium_polygonal_boomeramg_nodal.json).
-
-The checked-in PolyDeal agglomeration experiment contains all 192 configured
-matrices across levels 3, 5, 8, and 10 with a Chebyshev-smoothed V-cycle. It is
-a backend comparison rather than a theta sweep because that hierarchy does not
-use BoomerAMG's strength threshold. See
-[the configuration](configs/medium_polygonal_chebyshev.json) and
-[its trial table](datasets/medium/polygonal-chebyshev/diffusion_reports/trials.csv).
-
-### Machine-learning pipeline
-
-The frozen `cnn_paper_v1` dataset contains 4,808 samples from simplex and
-polygonal **default BoomerAMG** measurements. The selected checkpoint trained
-on 4,098 samples, used 236 validation samples, and was evaluated once on 474
-held-out samples grouped by source-matrix hash. The locked test result is
-RMSE 0.0390, \(R^2=0.9907\), and mean selected-theta convergence-factor regret
-0.00513. Exact best-grid-point selection is 19.64%, so the model should be
-treated as an approximate convergence-ranking policy rather than an exact
-theta classifier.
-
-The current checkpoint was not trained on nodal BoomerAMG or the explicit
-PolyDeal hierarchy; mixing those records into this model version would assign
-different convergence targets to the same matrix and theta. The end-to-end
-inference bridge has nevertheless been exercised successfully on supported
-simplex and polygonal default-BoomerAMG smoke cases. See the
-[training report](reports/ml_phase_3_training_report.md),
-[locked test report](reports/ml_phase_4_test_report.md), and
-[inference integration report](reports/ml_phase_5_inference_amg_report.md).
-
-## End-to-end workflow
-
-Run the following steps from the repository root. The examples use
-`build-unified` for compiled programs, `datasets/` for numerical results,
-`results/` for derived outputs, and `weights/` for trained models.
-
-### 1. Prepare the toolchain
-
-The C++ code requires:
-
-- CMake 3.20 or newer and a C++17 compiler.
-- deal.II 9.7 or newer, built with PETSc and HYPRE support.
-- PolyDeal built against the same deal.II installation when polygonal
-  experiments are required.
-- Trilinos support in deal.II when building the polygonal driver; the explicit
-  agglomeration backend stores its hierarchy in Trilinos sparse matrices.
-
-The Python code uses Python 3.10 or newer. Create an environment containing the
-numerical, learning, and plotting dependencies:
+Example setup (adjust the PyTorch install command for your platform and
+accelerator using the official selector):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install numpy scipy torch pandas matplotlib seaborn statsmodels \
-  scikit-learn
+python -m pip install numpy scipy scikit-learn torch matplotlib
 ```
 
-`pdflatex` and PGFPlots are optional. They are needed only for PDF figure
-generation; the plotting pipeline can still produce CSV, PNG, and SVG outputs
-without them.
+All Python commands below assume this environment is active and are run from
+the repository root.
 
-### 2. Configure, build, and test the solvers
+## Clone and build
 
-Point CMake to the deal.II and PolyDeal installations on the local machine:
+```bash
+git clone https://github.com/sarperyn/MeshAware-AMGNet.git
+cd MeshAware-AMGNet
+```
+
+Configure. `DEAL_II_DIR` must point at the directory containing
+`deal.IIConfig.cmake` (usually `<prefix>/lib/cmake/deal.II`), and
+`POLYDEAL_ROOT` at the PolyDeal source tree you have already built:
 
 ```bash
 cmake -S . -B build-unified \
-  -DDEAL_II_DIR=/path/to/deal.II/lib/cmake/deal.II \
-  -DPOLYDEAL_ROOT=/path/to/Polydeal \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build build-unified --parallel
-ctest --test-dir build-unified --output-on-failure
-python -m unittest discover -s tests/python -v
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=OFF \
+  -DDEAL_II_DIR=/path/to/dealii/lib/cmake/deal.II \
+  -DPOLYDEAL_ROOT=/path/to/Polydeal
 ```
 
-The build should produce `meshaware_diffusion_dealii` for quadrilateral and
-conforming simplex problems, `meshaware_diffusion_simplex_dg` for simplex
-SIPG problems, and `meshaware_diffusion_polydeal` for polygonal problems.
-If only deal.II is available, disable the polygonal driver with
-`-DMESHAWARE_BUILD_POLYDEAL=OFF`.
-
-BoomerAMG supports four smoother selections through the shared solver
-interface. The default preserves HYPRE's symmetric SOR/Jacobi relaxation:
+Build:
 
 ```bash
-./build-unified/meshaware_diffusion_dealii \
-  --mesh-family quadrilateral --level 3 --epsilon 1.2 \
-  --pattern vertical_split --theta 0.24 \
-  --amg-smoother symmetric-gauss-seidel
-
-./build-unified/meshaware_diffusion_dealii \
-  --mesh-family quadrilateral --level 3 --epsilon 1.2 \
-  --pattern vertical_split --theta 0.24 \
-  --amg-smoother damped-jacobi --jacobi-damping 0.6666666666666666
-
-./build-unified/meshaware_diffusion_dealii \
-  --mesh-family quadrilateral --level 3 --epsilon 1.2 \
-  --pattern vertical_split --theta 0.24 \
-  --amg-smoother chebyshev
+cmake --build build-unified -j
 ```
 
-For experiment sweeps, set `amg_smoother` and `jacobi_damping` in the JSON
-configuration. Trial records retain both the smoother name and its effective
-relaxation weight. BoomerAMG additionally accepts
-`l1-symmetric-gauss-seidel`; it is not available in the explicit PolyDeal
-backend and is intentionally rejected by the polygonal nodal profile.
+CMake options:
 
-Run the block-aware algebraic profile directly with:
+| Option | Default | Effect |
+| --- | --- | --- |
+| `MESHAWARE_BUILD_DEALII` | `ON` | Build the deal.II drivers. With `OFF`, no C++ target is produced. |
+| `MESHAWARE_BUILD_POLYDEAL` | `ON` | Attempt to build the polygonal driver. Has no effect unless deal.II is found and PolyDeal is located under `POLYDEAL_ROOT`. Set `OFF` to skip it explicitly. |
+| `BUILD_TESTING` | `ON` (set by `include(CTest)`) | Registers the CTest suite. **In the current tree this must be `OFF`**: `CMakeLists.txt` line 16 references `tests/cpp/coefficient_patterns_test.cpp`, which is not present, so configuration fails at the generate step with `Cannot find source file`. |
+
+Targets produced by a full build:
+
+- `meshaware_core` — header-only interface library ([include/meshaware/](include/meshaware/)).
+- `meshaware_petsc` — static library with the PETSc/BoomerAMG solver and record writer.
+- `meshaware_diffusion_dealii` — quadrilateral and conforming simplex driver.
+- `meshaware_diffusion_simplex_dg` — simplex SIPG driver.
+- `meshaware_diffusion_polydeal` — polygonal driver (only when PolyDeal is found).
+
+Executables land directly in the build directory, e.g.
+`build-unified/meshaware_diffusion_dealii`. Each accepts `--help`:
 
 ```bash
-./build-unified/meshaware_diffusion_polydeal \
-  --mesh-family polygonal --level 8 --epsilon 7 \
-  --pattern checkerboard_4x4 --theta 0.7044444444444445 \
-  --amg-backend boomeramg \
-  --boomeramg-profile polygonal-nodal \
-  --amg-smoother symmetric-gauss-seidel
+./build-unified/meshaware_diffusion_dealii --help
 ```
 
-This remains PETSc CG preconditioned by HYPRE BoomerAMG. The profile changes
-how BoomerAMG constructs its algebraic hierarchy; it does not replace AMG with
-a geometric solver.
+`build-unified` is used consistently below because it is the default
+`--build-dir` of [scripts/run_predicted_amg.py](scripts/run_predicted_amg.py).
+[scripts/run_experiments.py](scripts/run_experiments.py) instead defaults to
+`build`, so `--build-dir build-unified` is passed explicitly to it.
 
-The polygonal driver also provides PolyDeal's agglomeration multigrid
-hierarchy:
+## Numerical experiment: medium sweep
 
-```bash
-./build-unified/meshaware_diffusion_polydeal \
-  --mesh-family polygonal --level 6 --epsilon 7 \
-  --pattern checkerboard_4x4 \
-  --amg-backend polydeal-agglomeration
-```
+[configs/medium.json](configs/medium.json) is layered on top of
+[configs/common.json](configs/common.json): the loader reads `common.json` from
+the same directory and lets the experiment file override individual keys. The
+resulting grid is:
 
-This backend keeps the existing L-shaped polygons as its finest level, merges
-nested neighboring polygons without crossing the common 4-by-4 coefficient
-tile boundaries, constructs Galerkin coarse operators, and applies a
-configurable smoothed V-cycle. It accepts the same `--amg-smoother` choices:
-Chebyshev, damped Jacobi, and symmetric Gauss-Seidel (implemented by the
-Trilinos SSOR preconditioner). The polygonal experiment configurations use
-Chebyshev by default. Set
-`"amg_backend": "polydeal-agglomeration"` in a polygonal-only experiment
-configuration. `theta` is retained in records for schema compatibility but is
-not used by this backend.
+| Setting | Value | Source |
+| --- | --- | --- |
+| Mesh families | `quadrilateral`, `simplex`, `polygonal` | `medium.json` |
+| Refinement levels | 3, 5, 8, 10 (nominal $h = 2^{-\text{level}}$) | `medium.json` |
+| $\theta$ | 10 values, evenly spaced from 0.02 to 0.90 | `medium.json` |
+| Coefficient patterns | `vertical_split`, `checkerboard_2x2`, `vertical_stripes_4`, `checkerboard_4x4` | `common.json` |
+| $\varepsilon$ (contrast $10^{\varepsilon}$) | 0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8, 3.5, 5.0, 7.0, 9.5 | `common.json` |
+| High-coefficient region | `white` | `common.json` |
+| Repeats | 1 per $(\text{matrix}, \theta)$, plus 1 discarded warm-up | `medium.json` / `common.json` |
+| AMG | BoomerAMG, `default` profile, `symmetric-gauss-seidel` relaxation, Jacobi damping 2/3 | `common.json` |
+| CG tolerances | rtol $10^{-8}$, atol $10^{-50}$, at most 10000 iterations | `common.json` |
+| Matrix output | `scipy_csr_npz`, saved | `common.json` |
 
-### 3. Run the standalone simplex-DG experiment
-
-The simplex-DG driver uses the same interface-aligned triangular mesh as the
-conforming simplex experiment, but assigns three discontinuous P1 unknowns to
-each triangle. It uses the polygonal experiment's symmetric interior-penalty
-flux convention and coefficient-scaled penalty while retaining PETSc CG and
-default HYPRE BoomerAMG.
-
-Build and run its isolated smoke and convergence configurations with:
-
-```bash
-cmake -S . -B build-unified
-cmake --build build-unified --target meshaware_diffusion_simplex_dg --parallel
-ctest --test-dir build-unified -R dealii_simplex_dg --output-on-failure
-
-./scripts/run_simplex_dg_experiment.sh smoke
-./scripts/run_simplex_dg_experiment.sh convergence
-"$AMG_PYTHON" scripts/check_convergence.py \
-  --records-glob 'datasets/simplex-dg-convergence/records/*.json'
-```
-
-Inspect storage and the expanded full grid before running the medium sweep:
-
-```bash
-./scripts/run_simplex_dg_experiment.sh medium --dry-run
-"$AMG_PYTHON" scripts/storage_preflight.py \
-  --config configs/medium_simplex_dg.json \
-  --json-output results/medium_simplex_dg_storage_preflight.json \
-  --enforce-free-space
-./scripts/run_simplex_dg_experiment.sh medium
-```
-
-The medium configuration contains 192 matrices and 1,920 retained trials.
-Level 10 alone has 8,388,608 triangles and 25,165,824 DG unknowns, so it
-should only be attempted after the storage and memory preflight succeeds.
-The launcher requires `AMG_PYTHON`; `MESHAWARE_BUILD_DIR` and
-`MESHAWARE_OUTPUT_ROOT` may override its default build and output locations.
-
-### 4. Run a cross-family smoke experiment
-
-The [batch smoke configuration](configs/batch_smoke.json) exercises all three
-mesh families, two threshold values, repeated solves, matrix conversion, and
-report generation:
+`--dry-run` reports the expansion without running anything:
 
 ```bash
 python scripts/run_experiments.py \
-  --config configs/batch_smoke.json \
-  --build-dir build-unified \
-  --output-root datasets
-```
-
-Results are written under `datasets/batch_smoke/`. Rerunning the command skips
-complete records and resumes incomplete matrix batches. Use
-`--overwrite-records` only when the existing measurements should be replaced.
-
-### 5. Check numerical convergence
-
-Run the conforming Q1/P1 convergence study and its rate check:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/convergence.json \
-  --build-dir build-unified \
-  --output-root datasets
-python scripts/check_convergence.py \
-  --records-glob 'datasets/convergence/**/records/*.json'
-```
-
-Validate the polygonal SIPG path separately:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/polygonal_convergence.json \
-  --build-dir build-unified \
-  --output-root datasets
-python scripts/check_convergence.py \
-  --records-glob 'datasets/polygonal_convergence/**/records/*.json'
-```
-
-Do not start a large parameter sweep until the solver tests and convergence
-checks pass on the target machine.
-
-For the polygonal SIPG matrix, test the block-aware BoomerAMG profile before
-starting the medium sweep:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/polygonal_boomeramg_nodal_pilot.json \
-  --build-dir build-unified \
-  --output-root datasets
-```
-
-The pilot groups the three modal `FE_AggloDGP(1)` unknowns belonging to each
-polygon, supplies the projected constant mode as near-nullspace information,
-and uses HYPRE nodal coarsening with HMIS and extended+i interpolation. It
-records grid and operator complexity alongside the usual convergence and
-timing metrics. Compare those results with the matching cases in
-`datasets/medium/polygonal/`.
-
-The profile has also been promoted to the full medium polygonal grid:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/medium_polygonal_boomeramg_nodal.json \
-  --build-dir build-unified \
-  --output-root datasets
-```
-
-Run the one-solve-per-matrix PolyDeal agglomeration comparison with:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/medium_polygonal_chebyshev.json \
-  --build-dir build-unified \
-  --output-root datasets/medium
-```
-
-The second command reproduces the checked-in
-`datasets/medium/polygonal-chebyshev/` layout because that single-family
-configuration intentionally uses a flat output directory.
-
-### 6. Estimate storage and inspect an experiment
-
-The [small](configs/small.json), [medium](configs/medium.json), and
-[large](configs/large.json) configurations increase mesh coverage, threshold
-resolution, and repetition counts. Inspect the expanded grid without running
-it:
-
-```bash
-python scripts/run_experiments.py \
-  --config configs/small.json \
+  --config configs/medium.json \
   --build-dir build-unified \
   --output-root datasets \
   --dry-run
 ```
 
-Estimate retained storage, temporary conversion space, and solver memory
-before generation:
+For this configuration that prints **5760 expanded trials over 576 distinct
+matrices**. Running the sweep in full is expensive: it assembles and solves at
+level 10 for three mesh families, and every matrix is written to disk.
 
-```bash
-python scripts/storage_preflight.py \
-  --config configs/small.json \
-  --json-output results/small_storage_preflight.json \
-  --enforce-free-space
-```
-
-Run the same preflight with `configs/medium.json` or `configs/large.json`
-before selecting a larger tier.
-
-These cross-family tiers inherit `boomeramg_profile: default` from
-[configs/common.json](configs/common.json), so their polygonal records are the
-scalar-BoomerAMG baseline. Use the dedicated nodal configuration above when a
-block-aware polygonal BoomerAMG sweep is intended.
-
-### 7. Generate a numerical dataset
-
-The small tier is the practical starting point:
+A single trial, useful as a smoke check. `--limit` also switches the runner
+from batched execution to one solver invocation per trial
+(`execution_mode: single_trial_debug`):
 
 ```bash
 python scripts/run_experiments.py \
-  --config configs/small.json \
+  --config configs/medium.json \
+  --build-dir build-unified \
+  --output-root datasets \
+  --limit 1
+```
+
+One mesh family only. `--mesh-family` may be repeated; valid choices are
+`quadrilateral`, `simplex`, `simplex-dg`, and `polygonal`, intersected with the
+families the configuration declares:
+
+```bash
+python scripts/run_experiments.py \
+  --config configs/medium.json \
+  --build-dir build-unified \
+  --output-root datasets \
+  --mesh-family simplex
+```
+
+The complete sweep (expensive — hours to days depending on hardware):
+
+```bash
+python scripts/run_experiments.py \
+  --config configs/medium.json \
   --build-dir build-unified \
   --output-root datasets
 ```
 
-For each mesh family, the runner creates:
+Resume semantics: by default a matrix group whose trial records all exist is
+skipped, and partially complete groups are resumed by passing
+`--skip-existing-records` to the driver. Matrices that are already stored are
+not rewritten. `--overwrite-records` reruns everything and regenerates the
+operators.
 
-- `records/` with one JSON document per threshold and repeat;
-- `matrices/` with one validated compressed CSR NPZ per finite-element
-  operator;
-- `diffusion_reports/` with tabular trial data;
-- `summaries/` with grouped optimal-threshold results.
+Outputs are written under `<output-root>/<config name>`, i.e.
+`datasets/medium` for this configuration:
 
-The matrix is assembled once for each physical problem. Every threshold and
-repeat still receives a fresh AMG hierarchy. Existing valid artifacts are
-checked and reused when a run is restarted.
-
-### 8. Generate tables and figures
-
-Generate all report families for the small dataset:
-
-```bash
-bash scripts/run_figure_pipeline.sh \
-  --dataset-root datasets/small \
-  --output-root results/figures/small
+```
+datasets/medium/
+├── manifest.json                     # source config, fully expanded config, trial/matrix counts
+├── quadrilateral/
+│   ├── records/<sample_id>.json      # one trial record per (matrix, theta, repeat)
+│   ├── matrices/<matrix_id>.npz      # compressed CSR operator, one per matrix
+│   ├── diffusion_reports/trials.csv  # flattened trial table
+│   └── summaries/optimal_theta.csv   # best theta per matrix
+├── simplex/…
+└── polygonal/…
 ```
 
-The pipeline creates threshold-versus-convergence tables, threshold-versus-cost
-plots, normalized convergence/time scatter plots, and
-threshold-versus-hierarchy-level diagnostics. Outputs are grouped by mesh
-family under `results/figures/small/`.
+`matrix_id` encodes the mesh family, level, pattern, $\varepsilon$, and
+high region (for example `simplex_l3_vertical_split_e0_high_white`);
+`sample_id` appends the $\theta$ value and repeat index. Per-family
+subdirectories are the default and can be turned off with
+`"family_subdirectories": false` for single-family configurations, as in
+[configs/medium_simplex_dg.json](configs/medium_simplex_dg.json).
 
-If LaTeX or PGFPlots is unavailable, add `--no-pdf`. The CSV, PNG, and SVG
-outputs do not require the TeX backend.
+## ANN workflow
 
-### 9. Build the ANN dataset
+The model is a convolutional regressor
+([python/meshaware_ml/model.py](python/meshaware_ml/model.py)). Three
+convolution layers of width 40 followed by max-pooling and dropout compress a
+$3 \times 100 \times 100$ pooled view of the sparse operator into a 128-dimensional
+embedding; that embedding is concatenated with two scalars, $-\log_2 h$ and
+$\theta$, passed through five dense layers of width 128, and mapped to a single
+output. The training target is `rho_mean`, the residual-based convergence
+factor measured by the solver. One matrix view therefore serves every $\theta$
+sample for that matrix, and $\theta$ is selected at inference by evaluating the
+model over a candidate grid and taking the argmin of the predicted $\rho$.
 
-Finish or stop numerical generation before freezing an ML snapshot. The
-current model is trained only on simplex and polygonal default-BoomerAMG
-records; quadrilateral, polygonal-nodal, and PolyDeal-agglomeration records are
-intentionally excluded.
+Only `simplex` and `polygonal` data are supported by the ML pipeline.
 
-Build pooled matrix views, preserve leakage-safe split assignments, and create
-the canonical sample index:
+### A. Generate numerical data
+
+The pipeline consumes the trial records and finalized `.npz` operators produced
+by [the numerical experiment step](#numerical-experiment-medium-sweep). It
+looks for them at `<dataset-root>/<tier>/<mesh-family>/{records,matrices}`,
+where `tier` is `small` or `medium` — that is, the `name` field of
+[configs/small.json](configs/small.json) and
+[configs/medium.json](configs/medium.json). Run at least one of those sweeps
+for the simplex and polygonal families before continuing.
+
+### B. Build the ML index
+
+[scripts/build_ml_pipeline.py](scripts/build_ml_pipeline.py) freezes the
+dataset, builds matrix views, and produces the canonical leakage-safe index:
 
 ```bash
 python scripts/build_ml_pipeline.py \
   --dataset-root datasets \
   --output-root datasets/ml \
-  --tier small \
-  --mesh-family simplex \
-  --mesh-family polygonal \
-  --generation-status inactive \
-  --report reports/ml_phase_1_2_report.md
+  --tier small --tier medium \
+  --mesh-family simplex --mesh-family polygonal
 ```
 
-To reproduce the broader paper dataset, repeat `--tier` for both `small` and
-`medium`. Do not add nodal or explicit-agglomeration records to
-`cnn_paper_v1`: preconditioner choice changes the measured convergence target
-even when the sparse matrix and theta are identical. A model that combines
-those solvers needs an explicit backend/profile input and a new dataset/model
-version. Reruns reuse features identified by their source checksum and retain
-existing train, validation, and test assignments. Use `--reset-splits` only
-when intentionally creating a new split version.
+`--tier` and `--mesh-family` are repeatable and default to both values each.
+`--snapshot PATH` reuses an existing frozen snapshot instead of capturing a new
+one, and `--report PATH` relocates the generated Markdown report.
 
-### 10. Train the convergence-factor model
+What it does:
 
-The [baseline training configuration](configs/ml_cnn_baseline.json) reads the
-canonical training and validation partitions and writes checkpoints under
-`weights/cnn_paper_v1/`:
+1. **Snapshot.** Records path, size, and mtime of every matrix and record file
+   before reading any content, then verifies those stats again while reading.
+   Staging `.petsc` files are listed but excluded.
+2. **Views.** Each operator is pooled to the versioned `paper_v1` spec: a
+   $100 \times 100$ grid of balanced index blocks with three channels
+   (`positive_max`, `negative_max`, `sum`), `count_average` reduction,
+   `signed_log1p_maxabs` normalization, `float32`. Views are keyed by the
+   SHA-256 of the source matrix, so identical operators are pooled once and
+   reused.
+3. **Index and splits.** Samples are grouped by that matrix checksum and
+   assigned to `train` / `validation` / `test` at 0.85 / 0.05 / 0.10 with seed
+   2026, balancing the marginals of mesh family, level, family × level,
+   pattern, $\varepsilon$, and $\theta$. Because assignment is per
+   checksum, no matrix can appear in two partitions. Existing assignments are
+   preserved across reruns unless `--reset-splits` is passed.
+
+Artifacts, relative to `--output-root` (default `datasets/ml`):
+
+| Path | Contents |
+| --- | --- |
+| `snapshots/<snapshot_id>.json` | Frozen file inventory and digest |
+| `features/paper_v1/<sha256>.npz` | One pooled view per unique matrix checksum |
+| `manifests/features-<snapshot_id>.json` | Feature cache manifest and matrix references |
+| `index/paper_v1/samples.jsonl` | One row per $(\text{matrix}, \theta)$ sample with its split |
+| `index/paper_v1/splits.json` | Checksum → split assignments, seed, ratios, statistics |
+| `index/paper_v1/summary.json` | Audit counts, split statistics, target-ambiguity summary |
+| `audits/phase_1_2.json` | Machine-readable audit |
+
+The Markdown report defaults to `reports/ml_phase_1_2_report.md`.
+
+### C. Train the CNN
+
+[scripts/train_rho_cnn.py](scripts/train_rho_cnn.py) trains on the `train` and
+`validation` partitions only; the `test` partition is never opened.
+[configs/ml_cnn_baseline.json](configs/ml_cnn_baseline.json) supplies the model
+and optimization settings: batch size 32 samples (matrix groups are never
+split across batches), up to 500 epochs, Adam at learning rate $10^{-3}$, early
+stopping after 40 epochs without improvement, seed 2026, deterministic
+algorithms enabled.
+
+Smoke run — one epoch, enough to verify the data path and checkpoint writing,
+and **not** a trained model:
 
 ```bash
 python scripts/train_rho_cnn.py \
-  --config configs/ml_cnn_baseline.json
+  --config configs/ml_cnn_baseline.json \
+  --epoch-limit 1
 ```
 
-Training stops early when validation error no longer improves. It writes
-`best.pt`, `latest.pt`, `history.csv`, and `summary.json`. A stopped run can
-continue from the exact saved random and optimizer state:
+Full training (expensive):
+
+```bash
+python scripts/train_rho_cnn.py --config configs/ml_cnn_baseline.json
+```
+
+Resume exactly from the last checkpoint, restoring optimizer and RNG state.
+Required after an interrupted run, and the way to continue an
+`--epoch-limit`-bounded run:
 
 ```bash
 python scripts/train_rho_cnn.py \
@@ -586,112 +402,205 @@ python scripts/train_rho_cnn.py \
   --resume
 ```
 
-Use `--epoch-limit 1` for a short pipeline check before committing compute time
-to a complete run.
+`--device` overrides the configured device and accepts `auto`, `cpu`, `cuda`,
+or `mps`. The output directory named in the config (`weights/cnn_paper_v1`)
+receives `latest.pt`, `best.pt`, `history.csv`, and `summary.json`; the
+training report is written to `reports/ml_phase_3_training_report.md`. Starting
+a fresh run into a non-empty output directory is refused — use `--resume` or a
+new directory.
 
-### 11. Evaluate the selected checkpoint
+### D. Evaluate on the held-out split
 
-After model selection is complete, run the locked held-out evaluation:
+[scripts/evaluate_rho_cnn.py](scripts/evaluate_rho_cnn.py) runs the locked
+held-out test evaluation described by
+[configs/ml_cnn_evaluation.json](configs/ml_cnn_evaluation.json):
 
 ```bash
-python scripts/evaluate_rho_cnn.py \
-  --config configs/ml_cnn_evaluation.json
+python scripts/evaluate_rho_cnn.py --config configs/ml_cnn_evaluation.json
 ```
 
-This step writes predictions, overall and stratified metrics, grouped-bootstrap
-confidence intervals, threshold-selection regret, plots, and an artifact lock
-under `results/cnn_paper_v1/test_v1/`. A later invocation verifies and reuses
-the lock instead of evaluating the test set again.
+The evaluation is locked: the first run writes `evaluation_lock.json` recording
+the checkpoint checksum, the sample-index and split checksums, the sample and
+matrix counts, and a per-artifact digest. A later invocation verifies that lock
+against the current sources and reuses the stored result without running the
+model again. Mismatched sources are an error rather than a silent re-evaluation,
+so a new evaluation requires a new output directory.
 
-### 12. Recommend a threshold for an existing matrix
+Reported metrics:
 
-Use a finalized simplex or polygonal CSR NPZ matrix and provide the candidate
-threshold grid:
+- **Regression**, overall and stratified by mesh family, level, pattern,
+  $\varepsilon$, and $\theta$: MSE, RMSE, MAE, bias, $R^2$, Pearson
+  correlation, maximum absolute error, absolute-error quantiles (p50/p90/p95/p99),
+  and counts of predictions outside $[0, 1]$.
+- **Uncertainty**: bootstrap confidence intervals resampled over matrix
+  checksums, 2000 replicates at the 95% level with seed 2026.
+- **$\theta$ selection**, per matrix: the exact-optimum rate (how often the
+  argmin of predicted $\rho$ is a true argmin), and the mean, median, 95th
+  percentile, and maximum of the $\rho$ regret incurred by the selected
+  $\theta$, both overall and per mesh family.
+- The RMSE a constant train-mean predictor would achieve, as a baseline.
+
+Artifacts are written to `results/cnn_paper_v1/test_v1` (`metrics.json`,
+`predictions.jsonl` / `.csv`, `theta_decisions.jsonl` / `.csv`,
+`evaluation_lock.json`, plus PNG plots when Matplotlib is available), and the
+report to `reports/ml_phase_4_test_report.md`.
+
+### E. Predict $\rho$ and recommend $\theta$ for one matrix
+
+[scripts/predict_rho.py](scripts/predict_rho.py) scores one finalized CSR
+operator — any `.npz` produced by the experiment runner — against a grid of
+candidate thresholds:
 
 ```bash
+MATRIX_PATH=datasets/medium/simplex/matrices/simplex_l5_checkerboard_4x4_e2_high_white.npz
+
 python scripts/predict_rho.py \
-  --matrix datasets/small/simplex/matrices/simplex_l4_vertical_split_e1p2_high_white.npz \
-  --theta-values 0.2,0.4,0.6 \
+  --config configs/ml_cnn_inference.json \
+  --matrix "$MATRIX_PATH" \
   --output results/prediction.json
 ```
 
-The output contains the predicted convergence factor for every candidate,
-their deterministic ranking, the recommended threshold, and model and matrix
-provenance. The model does not support quadrilateral matrices because they are
-outside its training scope.
+Candidates default to the 13 values in `default_theta_values` of
+[configs/ml_cnn_inference.json](configs/ml_cnn_inference.json) and can be
+replaced with `--theta-values 0.1,0.24,0.5` or repeated `--theta 0.24` options
+(the two are mutually exclusive). The refinement level is read from the
+identity embedded in the `.npz`; pass `--level N` when it is absent, and note
+that an explicit value conflicting with the embedded one is rejected.
+`--device` accepts `auto`, `cpu`, `cuda`, `mps`.
 
-### 13. Run BoomerAMG with the model-selected threshold
+The JSON result contains the matrix identity and checksum, the candidate list,
+one `predicted_rho` per candidate, the `recommendation` object holding the
+selected `theta` and its `predicted_rho`, the level/$\theta$ support of the
+training data with warnings when the request falls outside it, feature and
+inference timings, and model provenance. Without `--output` the document goes
+to stdout and the one-line summary to stderr.
 
-The complete inference workflow assembles a new operator, converts it to the
-model representation, selects a candidate threshold, runs PETSc/HYPRE, and
-records the measured convergence factor:
+### F. End-to-end ANN-selected AMG solve
+
+[scripts/run_predicted_amg.py](scripts/run_predicted_amg.py) chains the whole
+loop: assemble the operator with the C++ driver, convert it to CSR, ask the CNN
+for a $\theta$, run BoomerAMG at that threshold, and compare predicted against
+measured convergence.
 
 ```bash
 python scripts/run_predicted_amg.py \
+  --inference-config configs/ml_cnn_inference.json \
   --build-dir build-unified \
-  --output-dir results/amg_inference/simplex_example \
+  --output-dir results/predicted_amg/simplex_l5_checkerboard_4x4_e2 \
   --mesh-family simplex \
-  --level 3 \
-  --pattern vertical_split \
-  --epsilon 1.2 \
-  --theta-values 0.2,0.4,0.6
+  --level 5 \
+  --pattern checkerboard_4x4 \
+  --epsilon 2 \
+  --device auto
 ```
 
-Use `--mesh-family polygonal` for the PolyDeal discretization with the default
-BoomerAMG profile. The current inference command does not select or model the
-polygonal-nodal or explicit-agglomeration preconditioners. The output directory
-contains the operator, recommendation, solver record, workflow manifest, and
-SHA-256 lock. Repeating an identical invocation verifies and reuses the locked
-artifacts; it does not silently overwrite them.
+`--mesh-family` accepts `simplex` or `polygonal`; the polygonal case needs
+`meshaware_diffusion_polydeal` in the build directory. Solver behaviour is
+tunable through `--high-region`, `--rtol`, `--atol`, `--max-iterations`,
+`--repeats`, and `--warmup-runs`, and the candidate grid through
+`--theta-values`.
 
+The command prints `selected_theta`, `predicted_rho`, and `measured_rho`, and
+writes `operator.npz`, `recommendation.json`, `records/*.json`, `manifest.json`,
+and `workflow_lock.json` into `--output-dir`. The output directory is staged
+and moved into place atomically; if it already exists, the stored lock is
+verified against the current request and the previous result is returned
+unchanged rather than recomputed.
 
-## Project structure
+## Configuration guide
 
-```text
-MeshAware-AMG/
-├── CMakeLists.txt
-├── README.md
-├── configs/
-├── datasets/
-├── docs/
-├── include/
-│   └── meshaware/
-├── python/
-│   ├── meshaware_data/
-│   └── meshaware_ml/
-├── reports/
-├── results/
-├── scripts/
-├── src/
-│   ├── common/
-│   ├── dealii/
-│   └── polydeal/
-├── tests/
-├── utils/
-└── weights/
-```
+| File | Purpose |
+| --- | --- |
+| [configs/common.json](configs/common.json) | Shared defaults merged into every experiment config in the same directory: patterns, $\varepsilon$ grid, high region, CG tolerances, AMG backend/profile/smoother, warm-ups, matrix format |
+| [configs/medium.json](configs/medium.json) | Primary sweep — three mesh families, levels 3/5/8/10, 10 $\theta$ values |
+| [configs/small.json](configs/small.json) | Reduced sweep — levels 3/4/6, 5 $\theta$ values; the second dataset tier the ML pipeline reads |
+| [configs/smoke.json](configs/smoke.json) | Single quadrilateral trial; the runner's default config |
+| [configs/medium_simplex_dg.json](configs/medium_simplex_dg.json) | Simplex SIPG sweep with flat (non-per-family) output |
+| [configs/medium_polygonal_boomeramg_nodal.json](configs/medium_polygonal_boomeramg_nodal.json) | Polygonal sweep using the `polygonal-nodal` BoomerAMG profile |
+| [configs/medium_polygonal_chebyshev.json](configs/medium_polygonal_chebyshev.json) | Polygonal sweep using the explicit PolyDeal agglomeration hierarchy |
+| [configs/ml_cnn_baseline.json](configs/ml_cnn_baseline.json) | CNN architecture, optimization schedule, dataset index paths, checkpoint and report destinations |
+| [configs/ml_cnn_evaluation.json](configs/ml_cnn_evaluation.json) | Held-out evaluation: training config to reuse, checkpoint, bootstrap settings, output directory |
+| [configs/ml_cnn_inference.json](configs/ml_cnn_inference.json) | Inference contract: training config, checkpoint, training summary, default candidate $\theta$ values |
 
-[configs/](configs/) contains versioned experiment, training, evaluation, and
-inference parameters. Values that define a scientific run belong here rather
-than in plotting or orchestration code.
+Remaining files in [configs/](configs/) are narrower variants of the same
+schemas (smoke tests, convergence studies, pilots, and the reference-table
+grid).
 
-[datasets/](datasets/) stores solver records and canonical sparse matrices. Its
-[datasets/ml/](datasets/ml/) subtree contains frozen inventories, pooled
-features, sample indexes, split assignments, and audit metadata.
+## Repository structure
 
-[src/common/](src/common/) owns the shared PETSc/HYPRE solver contract and
-experiment-record implementation. [src/dealii/](src/dealii/) and
-[src/polydeal/](src/polydeal/) contain the conforming and polygonal assembly
-paths.
+| Path | Responsibility |
+| --- | --- |
+| [include/meshaware/](include/meshaware/) | Header-only core: coefficient patterns and the manufactured solution, the trial-record schema, the PETSc/BoomerAMG solver interface, and shared CLI parsing helpers |
+| [src/common/](src/common/) | BoomerAMG configuration, CG solve and metric extraction, PETSc matrix export, JSON record writing |
+| [src/dealii/](src/dealii/) | deal.II drivers: continuous $Q_1$/$P_1$ (`diffusion_dealii.cpp`) and simplex SIPG (`diffusion_simplex_dg.cpp`) |
+| [src/polydeal/](src/polydeal/) | Polygonal agglomerated-DG driver, including the nodal BoomerAMG profile, the PolyDeal agglomeration multigrid backend, and the direct-solve oracle |
+| [python/meshaware_data/](python/meshaware_data/) | Experiment-config schema and grid expansion, solver command construction, stable matrix/sample identifiers, PETSc→CSR conversion and validation, atomic artifact writing, per-family CSV reporting |
+| [python/meshaware_ml/](python/meshaware_ml/) | Dataset snapshots and feature cache, matrix pooling, leakage-safe indexing and splitting, PyTorch dataset and model, training, locked evaluation, inference, and the end-to-end AMG integration |
+| [scripts/](scripts/) | Command-line entry points for sweeps, ML pipeline construction, training, evaluation, inference, the predicted-AMG workflow, and figure/table generation |
+| [configs/](configs/) | Versioned JSON experiment and ML configurations |
 
-[python/meshaware_data/](python/meshaware_data/) handles schemas, reporting,
-storage estimates, and PETSc-to-CSR conversion.
-[python/meshaware_ml/](python/meshaware_ml/) handles pooling, dataset indexing,
-training, evaluation, inference, and solver integration.
+Generated content — datasets, ML indices, checkpoints, evaluation results, and
+reports — is written to `datasets/`, `weights/`, `results/`, and `reports/`.
+These are not tracked in the repository; a fresh clone creates them on first
+use.
 
-[reports/](reports/) contains human-readable scientific summaries.
-[results/](results/) contains figures, evaluation artifacts, and model-selected
-AMG runs. [weights/](weights/) contains model checkpoints.
+## Scientific outputs and reproducibility
 
-[tests/](tests/) covers mathematical coefficient fields, storage transactions,
-schemas, orchestration, pooling, training, evaluation, and inference.
+**Trial records.** Every solve writes a JSON record carrying the mesh identity
+($\text{family}, \text{level}, h_{\text{nominal}}, h_{\max}$), the coefficient
+setting (pattern, $\varepsilon$, high region), the AMG configuration (backend,
+profile, smoother, relaxation weight, $\theta$), problem size (cells, DoFs,
+nnz), solver outcome (CG iterations, converged reason, initial and final
+residual), AMG hierarchy data (levels, grid and operator complexity),
+discretization errors ($L^2$, $H^1$ seminorm, energy), and the path and format
+of the stored operator.
+
+**Timing separation.** Assembly, AMG setup, and solve are timed independently
+and stored as separate fields, so preconditioner construction cost can be
+attributed apart from the Krylov iteration. Warm-up runs are executed and
+discarded before the measured repeats.
+
+**Convergence factor.** $\rho$ is computed from the residual history as
+$(\|r_{\text{final}}\| / \|r_{\text{initial}}\|)^{1/k}$ over the $k$ CG
+iterations actually performed. This is the quantity recorded per trial and the
+quantity the CNN regresses.
+
+**Matrix artifacts.** Operators are exported in PETSc binary form, converted to
+compressed CSR `.npz` with an embedded identity block, validated against the
+shape and nnz recorded in the trial record, and only then does the runner delete
+the PETSc staging file and rewrite the record's `matrix_path`. Reused matrices
+are revalidated rather than regenerated.
+
+**Leakage-safe splits.** Train/validation/test membership is decided per matrix
+content checksum, not per sample, so no operator can be seen during training
+and scored at test time. The dataset loader asserts hash disjointness between
+partitions at construction time.
+
+**Deterministic training.** Seeds are applied to Python, NumPy, and PyTorch,
+deterministic algorithms are requested, and checkpoints store optimizer and RNG
+state so `--resume` continues a run exactly rather than approximately.
+
+**Locked evaluation.** The held-out evaluation records checksums of the
+checkpoint, sample index, and split file, along with the exact sample and matrix
+counts and `model_updates: 0`. Re-running verifies that lock instead of scoring
+the test split again.
+
+## Citation and license
+
+This work reproduces and extends the heterogeneous diffusion experiment of:
+
+> P. F. Antonietti, M. Caldana, L. Dede'. *Accelerating Algebraic Multigrid
+> Methods via Artificial Neural Networks*.
+> arXiv:[2111.01629](https://arxiv.org/abs/2111.01629),
+> DOI [10.1007/s10013-022-00597-w](https://doi.org/10.1007/s10013-022-00597-w)
+
+The optional polygonal driver builds on PolyDeal, whose authors ask that you
+cite:
+
+> M. Feder, A. Cangiani, L. Heltai. *R3MG: R-tree based agglomeration of
+> polytopal grids with applications to multilevel methods*. Journal of
+> Computational Physics, 526 (2025).
+> <https://doi.org/10.1016/j.jcp.2025.113773>
+
+No license file is currently provided in this repository, so no license terms
+are granted.

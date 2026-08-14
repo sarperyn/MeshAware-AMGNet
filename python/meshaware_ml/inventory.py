@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from meshaware_data.artifacts import write_json_atomic
+from meshaware_data.csr_artifact import read_csr_npz_identity
 
 from .pooling import (
     PAPER_POOLING_SPEC,
@@ -121,27 +121,6 @@ def _verify_frozen_file(path: Path, entry: dict[str, Any]) -> None:
         raise RuntimeError(f"snapshotted file changed after capture: {path}")
 
 
-def read_matrix_identity_fast(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    with np.load(path, allow_pickle=False) as archive:
-        required = {"source_sha256", "identity_json", "shape", "schema_version"}
-        missing = required.difference(archive.files)
-        if missing:
-            raise ValueError(f"{path} is missing arrays: {sorted(missing)}")
-        if int(archive["schema_version"]) != 1:
-            raise ValueError(f"unsupported matrix schema in {path}")
-        source_sha256 = bytes(archive["source_sha256"]).decode("ascii")
-        identity = json.loads(bytes(archive["identity_json"]).decode("utf-8"))
-        shape = [int(value) for value in archive["shape"]]
-    if len(source_sha256) != 64:
-        raise ValueError(f"invalid source checksum in {path}")
-    return {
-        "source_sha256": source_sha256,
-        "identity": identity,
-        "shape": shape,
-    }
-
-
 def build_feature_cache(
     snapshot: dict[str, Any],
     *,
@@ -161,7 +140,7 @@ def build_feature_cache(
     for entry in snapshot["matrices"]:
         path = dataset_root / entry["path"]
         _verify_frozen_file(path, entry)
-        metadata = read_matrix_identity_fast(path)
+        metadata = read_csr_npz_identity(path)
         source_hash = metadata["source_sha256"]
         matrix_id = str(entry["matrix_id"])
         embedded_matrix_id = str(metadata["identity"].get("matrix_id", ""))
