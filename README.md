@@ -27,7 +27,6 @@ Networks*](https://arxiv.org/abs/2111.01629).
 - [ANN workflow](#ann-workflow)
 - [Configuration guide](#configuration-guide)
 - [Repository structure](#repository-structure)
-- [Scientific outputs and reproducibility](#scientific-outputs-and-reproducibility)
 - [Citation and license](#citation-and-license)
 
 ## Capabilities
@@ -544,47 +543,6 @@ Generated content — datasets, ML indices, checkpoints, evaluation results, and
 reports — is written to `datasets/`, `weights/`, `results/`, and `reports/`.
 These are not tracked in the repository; a fresh clone creates them on first
 use.
-
-## Scientific outputs and reproducibility
-
-**Trial records.** Every solve writes a JSON record carrying the mesh identity
-($\text{family}, \text{level}, h_{\text{nominal}}, h_{\max}$), the coefficient
-setting (pattern, $\varepsilon$, high region), the AMG configuration (backend,
-profile, smoother, relaxation weight, $\theta$), problem size (cells, DoFs,
-nnz), solver outcome (CG iterations, converged reason, initial and final
-residual), AMG hierarchy data (levels, grid and operator complexity),
-discretization errors ($L^2$, $H^1$ seminorm, energy), and the path and format
-of the stored operator.
-
-**Timing separation.** Assembly, AMG setup, and solve are timed independently
-and stored as separate fields, so preconditioner construction cost can be
-attributed apart from the Krylov iteration. Warm-up runs are executed and
-discarded before the measured repeats.
-
-**Convergence factor.** $\rho$ is computed from the residual history as
-$(\|r_{\text{final}}\| / \|r_{\text{initial}}\|)^{1/k}$ over the $k$ CG
-iterations actually performed. This is the quantity recorded per trial and the
-quantity the CNN regresses.
-
-**Matrix artifacts.** Operators are exported in PETSc binary form, converted to
-compressed CSR `.npz` with an embedded identity block, validated against the
-shape and nnz recorded in the trial record, and only then does the runner delete
-the PETSc staging file and rewrite the record's `matrix_path`. Reused matrices
-are revalidated rather than regenerated.
-
-**Leakage-safe splits.** Train/validation/test membership is decided per matrix
-content checksum, not per sample, so no operator can be seen during training
-and scored at test time. The dataset loader asserts hash disjointness between
-partitions at construction time.
-
-**Deterministic training.** Seeds are applied to Python, NumPy, and PyTorch,
-deterministic algorithms are requested, and checkpoints store optimizer and RNG
-state so `--resume` continues a run exactly rather than approximately.
-
-**Locked evaluation.** The held-out evaluation records checksums of the
-checkpoint, sample index, and split file, along with the exact sample and matrix
-counts and `model_updates: 0`. Re-running verifies that lock instead of scoring
-the test split again.
 
 ## Citation and license
 
