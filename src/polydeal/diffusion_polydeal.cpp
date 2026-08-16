@@ -244,13 +244,6 @@ Options parse_options(const int argc, char **argv) {
           meshaware::AmgSmoother::l1_symmetric_gauss_seidel)
     throw std::invalid_argument(
         "l1-symmetric-gauss-seidel is available only for BoomerAMG");
-  if (options.boomeramg_profile ==
-          meshaware::BoomerAmgProfile::polygonal_nodal &&
-      options.amg_smoother ==
-          meshaware::AmgSmoother::l1_symmetric_gauss_seidel)
-    throw std::invalid_argument(
-        "polygonal-nodal is incompatible with HYPRE's "
-        "l1-symmetric-gauss-seidel relaxation");
   if (!options.record_directory.empty() && !options.record_path.empty())
     throw std::invalid_argument("record and record-dir are mutually exclusive");
   if (options.record_directory.empty() && options.theta_values.size() != 1)
@@ -757,87 +750,11 @@ private:
         MatSetBlockSize(raw_matrix, static_cast<PetscInt>(dofs_per_polygon)),
         "MatSetBlockSize(polygonal modal block)");
 
-    // FE_AggloDGP is modal, so an all-ones coefficient vector is not the
-    // constant function. Interpolate one on the reference polygon and reuse
-    // those coefficients for every agglomerate.
-    std::vector<Point<2>> interpolation_points;
-    const unsigned int degree = finite_element.degree;
-    if (degree == 0) {
-      interpolation_points.emplace_back(0.5, 0.5);
-    } else {
-      for (unsigned int i = 0; i <= degree; ++i)
-        for (unsigned int j = 0; j + i <= degree; ++j)
-          interpolation_points.emplace_back(
-              static_cast<double>(i) / degree,
-              static_cast<double>(j) / degree);
-    }
-    if (interpolation_points.size() != dofs_per_polygon)
-      throw std::runtime_error(
-          "cannot interpolate the PolyDeal constant near-nullspace mode");
-
-    FullMatrix<double> vandermonde(dofs_per_polygon, dofs_per_polygon);
-    for (unsigned int row = 0; row < dofs_per_polygon; ++row)
-      for (unsigned int column = 0; column < dofs_per_polygon; ++column)
-        vandermonde(row, column) =
-            finite_element.shape_value(column, interpolation_points[row]);
-    FullMatrix<double> inverse_vandermonde(dofs_per_polygon,
-                                            dofs_per_polygon);
-    inverse_vandermonde.invert(vandermonde);
-    Vector<double> constant_values(dofs_per_polygon);
-    Vector<double> constant_coefficients(dofs_per_polygon);
-    constant_values = 1.0;
-    inverse_vandermonde.vmult(constant_coefficients, constant_values);
-
-    Vec near_nullspace_vector = nullptr;
-    meshaware::petsc_check(MatCreateVecs(raw_matrix, &near_nullspace_vector,
-                                         nullptr),
-                           "MatCreateVecs(near-nullspace)");
-    try {
-      meshaware::petsc_check(VecSet(near_nullspace_vector, 0.0),
-                             "VecSet(near-nullspace)");
-      std::vector<types::global_dof_index> dof_indices(dofs_per_polygon);
-      std::vector<PetscInt> petsc_indices(dofs_per_polygon);
-      std::vector<PetscScalar> petsc_values(dofs_per_polygon);
-      for (const auto &polytope :
-           agglomeration_handler->polytope_iterators()) {
-        polytope->get_dof_indices(dof_indices);
-        for (unsigned int index = 0; index < dofs_per_polygon; ++index) {
-          petsc_indices[index] = static_cast<PetscInt>(dof_indices[index]);
-          petsc_values[index] = constant_coefficients[index];
-        }
-        meshaware::petsc_check(
-            VecSetValues(near_nullspace_vector,
-                         static_cast<PetscInt>(dofs_per_polygon),
-                         petsc_indices.data(), petsc_values.data(),
-                         INSERT_VALUES),
-            "VecSetValues(near-nullspace)");
-      }
-      meshaware::petsc_check(VecAssemblyBegin(near_nullspace_vector),
-                             "VecAssemblyBegin(near-nullspace)");
-      meshaware::petsc_check(VecAssemblyEnd(near_nullspace_vector),
-                             "VecAssemblyEnd(near-nullspace)");
-      PetscReal norm = 0.0;
-      meshaware::petsc_check(VecNormalize(near_nullspace_vector, &norm),
-                             "VecNormalize(near-nullspace)");
-      if (!(norm > 0.0))
-        throw std::runtime_error("constant near-nullspace has zero norm");
-
-      MatNullSpace near_nullspace = nullptr;
-      meshaware::petsc_check(
-          MatNullSpaceCreate(PETSC_COMM_SELF, PETSC_FALSE, 1,
-                             &near_nullspace_vector, &near_nullspace),
-          "MatNullSpaceCreate");
-      const PetscErrorCode set_error =
-          MatSetNearNullSpace(raw_matrix, near_nullspace);
-      const PetscErrorCode destroy_error = MatNullSpaceDestroy(&near_nullspace);
-      meshaware::petsc_check(set_error, "MatSetNearNullSpace");
-      meshaware::petsc_check(destroy_error, "MatNullSpaceDestroy");
-    } catch (...) {
-      VecDestroy(&near_nullspace_vector);
-      throw;
-    }
-    meshaware::petsc_check(VecDestroy(&near_nullspace_vector),
-                           "VecDestroy(near-nullspace)");
+    // A single constant vector has zero coefficients in the linear modal
+    // components. HYPRE's interpolation-vector correction interprets those
+    // zeros as rows that need no interpolation, which can create zero coarse
+    // diagonals and makes scaled Chebyshev setup fail. Nodal coarsening only
+    // needs the modal block layout; use its regular system interpolation here.
   }
 
   double coefficient(const Point<2> &point) const {

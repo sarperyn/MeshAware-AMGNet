@@ -24,6 +24,7 @@ Networks*](https://arxiv.org/abs/2111.01629).
 - [Dependencies](#dependencies)
 - [Clone and build](#clone-and-build)
 - [Numerical experiment: medium sweep](#numerical-experiment-medium-sweep)
+- [Polygonal smoother/profile table](#polygonal-smootherprofile-table)
 - [ANN workflow](#ann-workflow)
 - [Configuration guide](#configuration-guide)
 - [Repository structure](#repository-structure)
@@ -57,8 +58,9 @@ Common to all drivers:
   experiment runner.
 
 Only the polygonal driver exposes `--amg-backend` and `--boomeramg-profile`.
-The `polygonal-nodal` BoomerAMG profile enables HYPRE nodal coarsening with a
-near-nullspace and is restricted to polygonal-only experiments; the
+The `polygonal-nodal` BoomerAMG profile groups the modal coefficients on each
+polygon into a HYPRE system block, enables nodal coarsening, and is restricted
+to polygonal-only experiments; the
 `polydeal-agglomeration` backend builds an explicit nested polygon
 agglomeration hierarchy instead of BoomerAMG and ignores $\theta$ (the value is
 still recorded). The polygonal driver's `--oracle` mode additionally solves the
@@ -276,6 +278,49 @@ high region (for example `simplex_l3_vertical_split_e0_high_white`);
 subdirectories are the default and can be turned off with
 `"family_subdirectories": false` for single-family configurations, as in
 [configs/medium_simplex_dg.json](configs/medium_simplex_dg.json).
+
+## Polygonal smoother/profile table
+
+[configs/polygonal_smoother_level5.json](configs/polygonal_smoother_level5.json)
+defines the focused polygonal comparison at refinement $L=5$
+($h=2^{-5}$), fixed $\theta=0.24$, and integer contrasts
+$\varepsilon=2,\ldots,7$. It runs all four coefficient patterns and compares
+all four BoomerAMG smoothers under both the scalar/default and
+`polygonal-nodal` profiles. Damped Jacobi uses $\omega=0.5$, which keeps the
+BoomerAMG cycle positive definite for CG on this study grid.
+
+The polygonal finite element remains the modal `FE_AggloDGP(1)` in both column
+groups. Here “nodal” means that BoomerAMG coarsens the three modal coefficients
+on each polygon as one system block; it is not a different polygonal
+finite-element basis. A single projected constant is deliberately not supplied
+to HYPRE's interpolation-vector correction because its zero linear-mode
+coefficients can produce singular coarse operators for scaled Chebyshev.
+
+Inspect the 192 solver invocations without running them:
+
+```bash
+python scripts/run_polygonal_smoother_study.py --dry-run
+```
+
+Run the study and generate the standalone LaTeX document plus its detailed CSV
+(use `--jobs 1` if concurrent PETSc processes are undesirable):
+
+```bash
+python scripts/run_polygonal_smoother_study.py \
+  --build-dir build-unified \
+  --jobs 4 \
+  --compile
+```
+
+Records and the combined canonical trial report are written under
+`datasets/polygonal-smoother-level5/`. The publication outputs are
+`results/figures/polygonal-smoother-level5/polygonal_smoother_tables.tex` and
+`polygonal_smoother_summary.csv`; with `--compile`, a PDF is written beside
+them. The command is resumable. To rebuild only the table from completed
+records, pass `--generate-only`. A solver failure is retained under
+`failures/<profile>/<smoother>/` and displayed as `failed` in the table, so a
+numerically unstable smoother does not abort or silently disappear from the
+study.
 
 ## ANN workflow
 
@@ -518,6 +563,7 @@ unchanged rather than recomputed.
 | [configs/medium_simplex_dg.json](configs/medium_simplex_dg.json) | Simplex SIPG sweep with flat (non-per-family) output |
 | [configs/medium_polygonal_boomeramg_nodal.json](configs/medium_polygonal_boomeramg_nodal.json) | Polygonal sweep using the `polygonal-nodal` BoomerAMG profile |
 | [configs/medium_polygonal_chebyshev.json](configs/medium_polygonal_chebyshev.json) | Polygonal sweep using the explicit PolyDeal agglomeration hierarchy |
+| [configs/polygonal_smoother_level5.json](configs/polygonal_smoother_level5.json) | Focused $L=5$, $\varepsilon=2,\ldots,7$ polygonal smoother comparison for scalar and nodal BoomerAMG profiles |
 | [configs/ml_cnn_baseline.json](configs/ml_cnn_baseline.json) | CNN architecture, optimization schedule, dataset index paths, checkpoint and report destinations |
 | [configs/ml_cnn_evaluation.json](configs/ml_cnn_evaluation.json) | Held-out evaluation: training config to reuse, checkpoint, bootstrap settings, output directory |
 | [configs/ml_cnn_inference.json](configs/ml_cnn_inference.json) | Inference contract: training config, checkpoint, training summary, default candidate $\theta$ values |

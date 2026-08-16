@@ -34,10 +34,6 @@ constexpr const char *interpolation_type_option =
     "-meshaware_pc_hypre_boomeramg_interp_type";
 constexpr const char *nodal_coarsening_option =
     "-meshaware_pc_hypre_boomeramg_nodal_coarsen";
-constexpr const char *vector_interpolation_option =
-    "-meshaware_pc_hypre_boomeramg_vec_interp_variant";
-constexpr const char *vector_interpolation_qmax_option =
-    "-meshaware_pc_hypre_boomeramg_vec_interp_qmax";
 } // namespace
 
 AmgBackend parse_amg_backend(const std::string_view name) {
@@ -181,21 +177,9 @@ SolverMetrics solve_with_boomer_amg(const Mat matrix, const Vec right_hand_side,
       if (block_size < 2)
         throw std::invalid_argument(
             "polygonal-nodal requires a matrix block size greater than one");
-      MatNullSpace near_nullspace = nullptr;
-      petsc_check(MatGetNearNullSpace(matrix, &near_nullspace),
-                  "MatGetNearNullSpace");
-      if (near_nullspace == nullptr)
-        throw std::invalid_argument(
-            "polygonal-nodal requires a matrix near-nullspace");
       set_option(coarsen_type_option, "HMIS");
       set_option(interpolation_type_option, "ext+i");
       set_option(nodal_coarsening_option, "1");
-      set_option(vector_interpolation_option, "2");
-      // There is one supplied near-nullspace vector, so at most one
-      // additional Q entry per interpolation row is needed. Without this
-      // cap HYPRE substantially increases operator complexity on the DG
-      // hierarchy without improving the observed iteration count.
-      set_option(vector_interpolation_qmax_option, "1");
     }
 
     const std::string threshold = petsc_real_option(options.strong_threshold);

@@ -113,14 +113,6 @@ class ExperimentConfig:
             raise ValueError(
                 "l1-symmetric-gauss-seidel is available only for BoomerAMG"
             )
-        if (
-            self.boomeramg_profile == "polygonal-nodal"
-            and self.amg_smoother == "l1-symmetric-gauss-seidel"
-        ):
-            raise ValueError(
-                "polygonal-nodal is incompatible with HYPRE's "
-                "l1-symmetric-gauss-seidel relaxation"
-            )
         if not 0.0 < self.jacobi_damping <= 1.0:
             raise ValueError("jacobi_damping must lie in (0,1]")
         if self.warmup_runs < 0:

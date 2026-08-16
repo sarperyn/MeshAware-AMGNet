@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "name": "polygonal-smoother-level5",
+  "mesh_family": "polygonal",
+  "level": 5,
+  "patterns": [
+    "vertical_split",
+    "checkerboard_2x2",
+    "vertical_stripes_4",
+    "checkerboard_4x4"
+  ],
+  "epsilons": [2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+  "theta": 0.24,
+  "high_region": "white",
+  "relative_tolerance": 1e-8,
+  "absolute_tolerance": 1e-50,
+  "maximum_iterations": 10000,
+  "jacobi_damping": 0.5,
+  "warmup_runs": 1,
+  "repeats": 1,
+  "table_smoothers": [
+    "chebyshev",
+    "damped-jacobi",
+    "l1-symmetric-gauss-seidel",
+    "symmetric-gauss-seidel"
+  ],
+  "amg_profiles": [
+    {
+      "key": "scalar",
+      "label": "modal operator / scalar AMG",
+      "boomeramg_profile": "default",
+      "smoothers": [
+        "chebyshev",
+        "damped-jacobi",
+        "l1-symmetric-gauss-seidel",
+        "symmetric-gauss-seidel"
+      ]
+    },
+    {
+      "key": "nodal",
+      "label": "modal operator / nodal AMG profile",
+      "boomeramg_profile": "polygonal-nodal",
+      "smoothers": [
+        "chebyshev",
+        "damped-jacobi",
+        "l1-symmetric-gauss-seidel",
+        "symmetric-gauss-seidel"
+      ]
+    }
+  ]
+}

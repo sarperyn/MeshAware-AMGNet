@@ -155,6 +155,43 @@ if(MESHAWARE_BUILD_DEALII)
               --amg-smoother symmetric-gauss-seidel
           )
           add_test(
+            NAME polydeal_boomeramg_nodal_chebyshev_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 5
+              --epsilon 7
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend boomeramg
+              --boomeramg-profile polygonal-nodal
+              --amg-smoother chebyshev
+          )
+          add_test(
+            NAME polydeal_boomeramg_nodal_l1_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 2
+              --epsilon 7
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend boomeramg
+              --boomeramg-profile polygonal-nodal
+              --amg-smoother l1-symmetric-gauss-seidel
+          )
+          add_test(
+            NAME polydeal_boomeramg_damped_jacobi_smoke
+            COMMAND meshaware_diffusion_polydeal
+              --mesh-family polygonal
+              --level 5
+              --epsilon 7
+              --pattern checkerboard_4x4
+              --theta 0.24
+              --amg-backend boomeramg
+              --boomeramg-profile default
+              --amg-smoother damped-jacobi
+              --jacobi-damping 0.5
+          )
+          add_test(
             NAME polydeal_agglomeration_multigrid_smoke
             COMMAND meshaware_diffusion_polydeal
               --mesh-family polygonal
@@ -197,6 +234,9 @@ if(MESHAWARE_BUILD_DEALII)
             polydeal_assemble_only
             polydeal_chebyshev_smoke
             polydeal_boomeramg_nodal_smoke
+            polydeal_boomeramg_nodal_chebyshev_smoke
+            polydeal_boomeramg_nodal_l1_smoke
+            polydeal_boomeramg_damped_jacobi_smoke
             polydeal_agglomeration_multigrid_smoke
             polydeal_agglomeration_damped_jacobi_smoke
             polydeal_agglomeration_symmetric_gauss_seidel_smoke
